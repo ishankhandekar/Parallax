@@ -60,7 +60,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
   del(k) { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } },
 };
-const S_DEFAULTS = { quality: 'auto', fps: false, master: 80, music: 70, sfx: 80, fov: 62, shake: true, flash: true, ring: true, hints: true };
+const S_DEFAULTS = { quality: 'auto', fps: false, master: 80, music: 70, sfx: 80, fov: 62, shake: true, flash: true, ring: true, hints: true, sound: true };
 const S = (() => {
   let saved = {};
   try { saved = JSON.parse(store.get('parallax.settings', '{}')) || {}; } catch { saved = {}; }
@@ -96,7 +96,7 @@ const SIDE_NAMES = ['FLOOR', 'EAST WALL', 'CEILING', 'WEST WALL'];
 const AU = (() => {
   let ctx = null, bus, tone, master, revIn, padF, bassG, windF, windG, noiseBuf, musicBus, sfxBus, sfxRev, padSend;
   const vol = { master: S.master / 100, music: S.music / 100, sfx: S.sfx / 100 };
-  let muted = false, rate = 1, nextT = 0, step = 0, chord = 0, bassLvl = 0.2, playing = false;
+  let muted = !S.sound, rate = 1, nextT = 0, step = 0, chord = 0, bassLvl = 0.2, playing = false;
   const tuned = [], voices = [], bassO = [];
   // D dorian-ish ring of warm ninth chords. b = bass note, n = pad voicing (MIDI).
   const CH = [
@@ -247,6 +247,10 @@ const AU = (() => {
       master.gain.setTargetAtTime(masterLevel(), t, 0.05);
       musicBus.gain.setTargetAtTime(mu, t, 0.05); padSend.gain.setTargetAtTime(0.8 * mu, t, 0.05);
       sfxBus.gain.setTargetAtTime(sf, t, 0.05); sfxRev.gain.setTargetAtTime(sf, t, 0.05);
+    },
+    setMuted(m) {
+      muted = m;
+      if (ctx) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.03);
     },
     toggleMute() {
       muted = !muted;
@@ -1281,7 +1285,10 @@ function goHome() {
   hud.card.classList.remove('show'); hud.toast.classList.remove('show');
   hud.root.classList.add('hidden'); hud.start.classList.remove('out');
 }
-function toggleSound() { AU.init(); $('soundState').textContent = AU.toggleMute() ? 'OFF' : 'ON'; }
+function toggleSound() {
+  AU.init(); setSetting('sound', !S.sound);
+  if (game.state !== 'menu') toast(S.sound ? 'SOUND ON' : 'SOUND OFF');
+}
 
 function doFlip(dir) {
   const s = game.sim;
@@ -1347,7 +1354,6 @@ addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 hud.start.addEventListener('click', startGame);
 $('btnRestart').addEventListener('click', e => { AU.click(); restart(); e.currentTarget.blur(); });
 $('btnHome').addEventListener('click', e => { AU.click(); goHome(); e.currentTarget.blur(); });
-$('btnSound').addEventListener('click', e => { toggleSound(); AU.click(); e.currentTarget.blur(); });
 for (const b of document.querySelectorAll('button')) b.addEventListener('mouseenter', () => AU.hover());
 addEventListener('mousemove', e => {
   if (game.state !== 'menu') return;
@@ -1376,6 +1382,7 @@ function updateSettingsUI() {
 function setSetting(k, v) {
   S[k] = v; saveSettings();
   if (k === 'quality') setQualitySetting(v);
+  if (k === 'sound') AU.setMuted(!v);
   if (k === 'master' || k === 'music' || k === 'sfx') AU.setVolumes(S.master / 100, S.music / 100, S.sfx / 100);
   updateSettingsUI();
 }
