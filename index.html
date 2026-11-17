@@ -89,7 +89,7 @@
   #grav .origin { fill: var(--ink); }
   #grav .ball { fill: var(--accent); stroke: var(--accent); stroke-width: 0; transition: fill .12s, stroke .8s; }
   #grav .ball.spent { fill: transparent; stroke-width: 1.5; }
-  #grav .cd { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke .8s; }
+  #grav .cd { fill: none; stroke: var(--accent); stroke-width: 4; stroke-dasharray: 100; transition: stroke .8s; }
   #grav .arrow { fill: none; stroke: var(--ink); stroke-width: 1.5; }
 
   #prompt { position: absolute; left: 50%; bottom: 17vh; transform: translate(-50%, 8px); font-family: var(--mono); font-size: 12px; letter-spacing: .2em; padding: 11px 18px 10px; background: var(--ink); color: var(--paper); opacity: 0; transition: opacity .25s, transform .25s; white-space: nowrap; }
@@ -133,7 +133,10 @@
   .s-ctl div { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; line-height: 1.7; }
   .s-ctl div span { display: block; color: var(--muted); }
   .s-ctl div b { font-family: var(--sans); font-weight: 800; font-size: 19px; letter-spacing: -.01em; display: block; margin: 3px 0 1px; }
-  .s-go { grid-column: 9 / span 4; display: flex; justify-content: flex-end; }
+  .s-go { grid-column: 9 / span 4; display: flex; justify-content: flex-end; gap: 10px; }
+  .s-set { font-family: var(--sans); font-weight: 800; font-size: 15px; letter-spacing: -.01em; background: rgba(244,241,234,.6); border: 1px solid var(--ink); color: var(--ink); padding: 0 18px; cursor: pointer; display: flex; align-items: center; gap: 14px; transition: background .14s, color .14s; white-space: nowrap; }
+  .s-set kbd { font-size: 10px; color: inherit; border-color: currentColor; }
+  .s-set:hover { background: var(--ink); color: var(--paper); }
   #btnStart { font-family: var(--sans); font-weight: 800; font-size: 19px; letter-spacing: -.01em; background: var(--ink); color: var(--paper); border: 0; padding: 19px 22px 18px 26px; cursor: pointer; display: flex; align-items: center; gap: 34px; transition: background .14s, color .14s, gap .2s; }
   #btnStart:hover { background: var(--accent); color: var(--ink); gap: 46px; }
   #btnStart kbd { font-size: 10px; color: inherit; border-color: currentColor; opacity: .8; animation: blink 1.5s steps(2, jump-none) infinite; }
@@ -144,6 +147,62 @@
   #pause.on { display: flex; }
   #pause b { font-weight: 900; font-size: 9vw; letter-spacing: -.05em; line-height: .85; }
   #pause span { font-family: var(--mono); font-size: 11px; letter-spacing: .2em; }
+
+  .btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+  .fps { position: absolute; right: var(--m); top: calc(var(--m) + 34px); font-family: var(--mono); font-size: 10px; letter-spacing: .14em; display: none; font-variant-numeric: tabular-nums; }
+  .fps.on { display: block; }
+
+  /* ── cooldown ring around the orb ─────────────────────── */
+  #orbRing { position: absolute; left: 0; top: 0; width: 40px; height: 40px; overflow: visible; pointer-events: none; opacity: 0; transition: opacity .1s; will-change: transform; }
+  #orbRing .g { transform-origin: 0 0; }
+  #orbRing .trk { fill: none; stroke: rgba(17,17,20,.2); stroke-width: 5; }
+  #orbRing .arc { fill: none; stroke: var(--accent); stroke-width: 7; stroke-dasharray: 100; transition: stroke .8s; }
+  #orbRing[data-state="cool"], #orbRing[data-state="spent"] { opacity: 1; }
+  #orbRing[data-state="spent"] .arc { opacity: 0; }
+  #orbRing[data-state="spent"] .trk { stroke: rgba(17,17,20,.62); stroke-dasharray: 5 7; stroke-width: 4; }
+  #orbRing.pop { animation: orbPop .34s ease-out; }
+  #orbRing.pop .trk { stroke: var(--accent); animation: orbPopRing .34s ease-out; }
+  @keyframes orbPop { 0% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes orbPopRing { 0% { r: 42px; stroke-width: 9; } 100% { r: 56px; stroke-width: 1; } }
+  #orbRing.deny .g { animation: orbDeny .3s ease-out; }
+  @keyframes orbDeny { 0%, 100% { transform: none; } 20% { transform: translateX(-7px); } 45% { transform: translateX(6px); } 70% { transform: translateX(-3px); } }
+
+  /* ── settings ─────────────────────────────────────────── */
+  #settings { position: fixed; inset: 0; z-index: 20; visibility: hidden; pointer-events: none; transition: visibility 0s .32s; }
+  #settings.on { visibility: visible; pointer-events: auto; transition: none; }
+  .st-scrim { position: absolute; inset: 0; background: rgba(17,17,20,.3); opacity: 0; transition: opacity .25s; }
+  #settings.on .st-scrim { opacity: 1; }
+  .st-panel { position: absolute; top: 0; right: 0; bottom: 0; width: min(440px, 100%); background: var(--paper); border-left: 1px solid var(--ink); padding: var(--m); overflow-y: auto; transform: translateX(100%); transition: transform .32s cubic-bezier(.2,.8,.2,1); display: flex; flex-direction: column; gap: 22px; }
+  #settings.on .st-panel { transform: none; }
+  .st-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--ink); }
+  .st-head h2 { font-weight: 900; font-size: 46px; letter-spacing: -.05em; line-height: .88; margin-top: 8px; }
+  .st-head h2::after { content: ''; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); margin-left: 6px; }
+  .st-x { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; background: none; border: 1px solid var(--ink); color: var(--ink); padding: 8px 10px; cursor: pointer; white-space: nowrap; }
+  .st-x:hover { background: var(--ink); color: var(--paper); }
+  .st-perf { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .st-perf::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .st-sec h3 { font-family: var(--mono); font-weight: 400; font-size: 10px; letter-spacing: .16em; color: var(--muted); padding-bottom: 8px; border-bottom: 1px solid var(--ink); }
+  .st-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--hair); }
+  .st-k b { display: block; font-weight: 700; font-size: 15px; letter-spacing: -.01em; }
+  .st-k span { display: block; font-family: var(--mono); font-size: 9px; letter-spacing: .08em; color: var(--muted); margin-top: 4px; }
+  .seg { display: flex; border: 1px solid var(--ink); flex-shrink: 0; }
+  .seg button { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; background: none; border: 0; border-left: 1px solid var(--ink); color: var(--ink); padding: 7px 9px; cursor: pointer; transition: background .1s, color .1s; }
+  .seg button:first-child { border-left: 0; }
+  .seg button:hover { background: rgba(17,17,20,.08); }
+  .seg button.on { background: var(--ink); color: var(--paper); }
+  .seg button:focus-visible, .st-x:focus-visible, .st-wide:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .rng { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .rng output { font-family: var(--mono); font-size: 11px; min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+  .rng input { -webkit-appearance: none; appearance: none; width: 140px; height: 20px; background: transparent; cursor: pointer; --p: 50%; }
+  .rng input::-webkit-slider-runnable-track { height: 3px; background: linear-gradient(to right, var(--ink) var(--p), var(--hair) var(--p)); }
+  .rng input::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; margin-top: -5px; background: var(--accent); border: 1px solid var(--ink); border-radius: 0; }
+  .rng input::-moz-range-track { height: 3px; background: var(--hair); }
+  .rng input::-moz-range-progress { height: 3px; background: var(--ink); }
+  .rng input::-moz-range-thumb { width: 12px; height: 12px; background: var(--accent); border: 1px solid var(--ink); border-radius: 0; }
+  .rng input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .st-wide { width: 100%; margin-top: 12px; font-family: var(--mono); font-size: 10px; letter-spacing: .14em; background: none; border: 1px solid var(--ink); color: var(--ink); padding: 11px; cursor: pointer; }
+  .st-wide:hover { background: var(--accent); border-color: var(--accent); }
+  .st-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--ink); }
 
   @media (max-width: 960px) {
     .stage i, .stage span { display: none; }
@@ -160,6 +219,8 @@
     .tl { gap: 10px; }
     .tr { gap: 6px; }
     .btn { padding: 6px 8px; font-size: 9px; letter-spacing: .06em; }
+    .btn .btn-t { display: none; }
+    .rng input { width: 110px; }
   }
   @media (max-width: 400px) { .stage { display: none; } }
   @media (max-width: 860px) {
@@ -194,6 +255,7 @@
   </header>
 
   <div class="tr">
+    <button id="btnSettings" class="btn" type="button" aria-label="Settings"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 4h14M1 8h14M1 12h14" stroke="currentColor" stroke-width="1.2"/><rect x="3.5" y="2.5" width="3" height="3" fill="currentColor"/><rect x="9.5" y="6.5" width="3" height="3" fill="currentColor"/><rect x="5.5" y="10.5" width="3" height="3" fill="currentColor"/></svg><span class="btn-t">SETTINGS</span><kbd>O</kbd></button>
     <button id="btnSound" class="btn" type="button">SOUND <b id="soundState">ON</b><kbd>M</kbd></button>
     <button id="btnRestart" class="btn solid" type="button">RESTART <kbd>R</kbd></button>
   </div>
@@ -242,6 +304,8 @@
     </svg>
   </div>
 
+  <div id="fps" class="fps">60 FPS</div>
+  <svg id="orbRing" viewBox="-50 -50 100 100" data-state="off" aria-hidden="true"><g class="g"><circle class="trk" r="42"/><circle class="arc" id="orbArc" r="42" pathLength="100" transform="rotate(-90)"/></g></svg>
   <div id="prompt"></div>
   <div id="card">
     <div class="num" id="cardNum">01</div>
@@ -269,13 +333,76 @@
       <div><span>01 — STEER</span><b>A / D</b>← / →</div>
       <div><span>02 — SHIFT GRAVITY</span><b>Q / E</b>OR SPACE</div>
       <div><span>03 — FOCUS</span><b>SHIFT</b>HOLD FOR SLOW-MO</div>
-      <div><span>04 — SYSTEM</span><b>R · M · P</b>RESTART · SOUND · PAUSE</div>
+      <div><span>04 — SYSTEM</span><b>O · R · P</b>SETTINGS · RESTART · PAUSE</div>
     </div>
-    <div class="s-go"><button id="btnStart" type="button">BEGIN <kbd>SPACE</kbd></button></div>
+    <div class="s-go"><button id="btnStartSettings" class="s-set" type="button">SETTINGS <kbd>O</kbd></button><button id="btnStart" type="button">BEGIN <kbd>SPACE</kbd></button></div>
   </div>
 </div>
 
 <div id="pause"><b>PAUSED</b><span>PRESS P TO RESUME</span></div>
+
+<!-- ───────────── Settings ───────────── -->
+<div id="settings" aria-hidden="true">
+  <div class="st-scrim"></div>
+  <aside class="st-panel" role="dialog" aria-modal="true" aria-labelledby="stTitle">
+    <header class="st-head">
+      <div><div class="lab">Preferences</div><h2 id="stTitle">Settings</h2></div>
+      <button class="st-x" id="stClose" type="button">CLOSE <kbd>ESC</kbd></button>
+    </header>
+    <div class="lab st-perf" id="stPerf">— FPS</div>
+
+    <section class="st-sec">
+      <h3>01 — GRAPHICS</h3>
+      <div class="st-row">
+        <div class="st-k"><b>Quality</b><span id="stQualNote">—</span></div>
+        <div class="seg" data-key="quality"><button type="button" data-v="auto">AUTO</button><button type="button" data-v="low">LOW</button><button type="button" data-v="medium">MED</button><button type="button" data-v="high">HIGH</button></div>
+      </div>
+      <div class="st-row">
+        <div class="st-k"><b>FPS counter</b><span>FRAME RATE, TOP RIGHT</span></div>
+        <div class="seg" data-key="fps"><button type="button" data-v="false">OFF</button><button type="button" data-v="true">ON</button></div>
+      </div>
+    </section>
+
+    <section class="st-sec">
+      <h3>02 — AUDIO</h3>
+      <div class="st-row"><div class="st-k"><b>Master volume</b></div><div class="rng"><input type="range" min="0" max="100" step="1" data-key="master" aria-label="Master volume"><output data-key="master">80</output></div></div>
+      <div class="st-row"><div class="st-k"><b>Music</b><span>BASS PULSE + PAD</span></div><div class="rng"><input type="range" min="0" max="100" step="1" data-key="music" aria-label="Music volume"><output data-key="music">70</output></div></div>
+      <div class="st-row"><div class="st-k"><b>Effects</b><span>LANDINGS, SHIFTS, WIND</span></div><div class="rng"><input type="range" min="0" max="100" step="1" data-key="sfx" aria-label="Effects volume"><output data-key="sfx">80</output></div></div>
+    </section>
+
+    <section class="st-sec">
+      <h3>03 — CAMERA</h3>
+      <div class="st-row"><div class="st-k"><b>Field of view</b><span>WIDER SEES MORE AHEAD</span></div><div class="rng"><input type="range" min="55" max="80" step="1" data-key="fov" aria-label="Field of view"><output data-key="fov">62°</output></div></div>
+      <div class="st-row">
+        <div class="st-k"><b>Screen shake</b><span>IMPACTS + CRASHES</span></div>
+        <div class="seg" data-key="shake"><button type="button" data-v="false">OFF</button><button type="button" data-v="true">ON</button></div>
+      </div>
+      <div class="st-row">
+        <div class="st-k"><b>Screen flashes</b><span>RESPAWNS + RESTARTS</span></div>
+        <div class="seg" data-key="flash"><button type="button" data-v="false">OFF</button><button type="button" data-v="true">ON</button></div>
+      </div>
+    </section>
+
+    <section class="st-sec">
+      <h3>04 — INTERFACE</h3>
+      <div class="st-row">
+        <div class="st-k"><b>Shift cooldown ring</b><span>AROUND THE ORB AFTER Q / E</span></div>
+        <div class="seg" data-key="ring"><button type="button" data-v="false">OFF</button><button type="button" data-v="true">ON</button></div>
+      </div>
+      <div class="st-row">
+        <div class="st-k"><b>Control hints</b><span>TUTORIAL PROMPTS IN STAGES 01–02</span></div>
+        <div class="seg" data-key="hints"><button type="button" data-v="false">OFF</button><button type="button" data-v="true">ON</button></div>
+      </div>
+    </section>
+
+    <section class="st-sec">
+      <h3>05 — DATA</h3>
+      <button class="st-wide" id="stReset" type="button">RESET BEST DISTANCE</button>
+    </section>
+
+    <div class="lab st-foot">Saved automatically on this device</div>
+  </aside>
+</div>
 
 <script type="module" src="game.js"></script>
 </body>

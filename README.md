@@ -16,6 +16,7 @@ Built with Three.js (bloom post-processing) and the Web Audio API. Every sound i
 | R | Restart |
 | M | Sound on/off |
 | P or Esc | Pause |
+| O | Settings (graphics quality, volume, camera, interface) |
 
 ## Run locally
 

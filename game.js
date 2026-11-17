@@ -53,6 +53,25 @@ const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
 const smooth = t => t * t * (3 - 2 * t);
 const mod4 = n => ((n % 4) + 4) % 4;
 const $ = id => document.getElementById(id);
+
+/* persisted settings — storage can be blocked (private windows, school policies), so every access is guarded */
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } },
+};
+const S_DEFAULTS = { quality: 'auto', fps: false, master: 80, music: 70, sfx: 80, fov: 62, shake: true, flash: true, ring: true, hints: true };
+const S = (() => {
+  let saved = {};
+  try { saved = JSON.parse(store.get('parallax.settings', '{}')) || {}; } catch { saved = {}; }
+  const out = { ...S_DEFAULTS };
+  for (const k in S_DEFAULTS) if (typeof saved[k] === typeof S_DEFAULTS[k]) out[k] = saved[k];
+  if (!['auto', 'low', 'medium', 'high'].includes(out.quality)) out.quality = 'auto';
+  for (const k of ['master', 'music', 'sfx']) out[k] = Math.min(100, Math.max(0, out[k]));
+  out.fov = Math.min(80, Math.max(55, out.fov));
+  return out;
+})();
+const saveSettings = () => store.set('parallax.settings', JSON.stringify(S));
 function rng(seed) {
   return () => {
     seed = (seed + 0x6D2B79F5) | 0;
@@ -75,7 +94,8 @@ const SIDE_NAMES = ['FLOOR', 'EAST WALL', 'CEILING', 'WEST WALL'];
 /* ═══ 02  AUDIO ENGINE ══════════════════════════════════════════════════ */
 
 const AU = (() => {
-  let ctx = null, bus, tone, master, revIn, padF, bassG, windF, windG, noiseBuf;
+  let ctx = null, bus, tone, master, revIn, padF, bassG, windF, windG, noiseBuf, musicBus, sfxBus, sfxRev, padSend;
+  const vol = { master: S.master / 100, music: S.music / 100, sfx: S.sfx / 100 };
   let muted = false, rate = 1, nextT = 0, step = 0, chord = 0, bassLvl = 0.2, playing = false;
   const tuned = [], voices = [], bassO = [];
   // D dorian-ish ring of warm ninth chords. b = bass note, n = pad voicing (MIDI).
@@ -89,6 +109,7 @@ const AU = (() => {
   ];
   const PAT = [1, .5, .72, .5, .9, .5, .72, .62];
   const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+  const masterLevel = () => muted ? 0 : vol.master * 1.12;
 
   function init() {
     if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return; }
@@ -96,12 +117,14 @@ const AU = (() => {
     if (!AC) return;
     ctx = new AC();
     const now = ctx.currentTime;
-    master = ctx.createGain(); master.gain.value = muted ? 0 : 0.9;
+    master = ctx.createGain(); master.gain.value = masterLevel();
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -15; comp.ratio.value = 4; comp.attack.value = 0.004; comp.release.value = 0.22;
     tone = ctx.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = 18000; tone.Q.value = 0.4;
     bus = ctx.createGain();
     bus.connect(tone); tone.connect(comp); comp.connect(master); master.connect(ctx.destination);
+    musicBus = ctx.createGain(); musicBus.gain.value = vol.music; musicBus.connect(bus);
+    sfxBus = ctx.createGain(); sfxBus.gain.value = vol.sfx; sfxBus.connect(bus);
 
     // shared noise
     noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
@@ -118,12 +141,13 @@ const AU = (() => {
     revIn = ctx.createGain();
     const revOut = ctx.createGain(); revOut.gain.value = 0.42;
     revIn.connect(conv); conv.connect(revOut); revOut.connect(bus);
+    sfxRev = ctx.createGain(); sfxRev.gain.value = vol.sfx; sfxRev.connect(revIn);
 
     // ambient pad: 4 voices × 2 detuned saws → breathing low-pass → reverb
     padF = ctx.createBiquadFilter(); padF.type = 'lowpass'; padF.frequency.value = 620; padF.Q.value = 0.9;
     const padG = ctx.createGain(); padG.gain.value = 0; padG.gain.setTargetAtTime(0.85, now, 1.6);
-    const send = ctx.createGain(); send.gain.value = 0.8;
-    padF.connect(padG); padG.connect(bus); padG.connect(send); send.connect(revIn);
+    const send = padSend = ctx.createGain(); send.gain.value = 0.8 * vol.music;
+    padF.connect(padG); padG.connect(musicBus); padG.connect(send); send.connect(revIn);
     const lfo = ctx.createOscillator(); lfo.frequency.value = 0.08;
     const lfoG = ctx.createGain(); lfoG.gain.value = 210;
     lfo.connect(lfoG); lfoG.connect(padF.frequency); lfo.start();
@@ -143,7 +167,7 @@ const AU = (() => {
     // pulsing sub-bass
     bassG = ctx.createGain(); bassG.gain.value = 0.0001;
     const bl = ctx.createBiquadFilter(); bl.type = 'lowpass'; bl.frequency.value = 240;
-    bassG.connect(bl); bl.connect(bus);
+    bassG.connect(bl); bl.connect(musicBus);
     [['sine', 1, 1], ['triangle', 2, 0.2]].forEach(([type, mul, gv]) => {
       const o = ctx.createOscillator(); o.type = type; o.frequency.value = hz(CH[0].b) * mul;
       const g = ctx.createGain(); g.gain.value = gv;
@@ -155,7 +179,7 @@ const AU = (() => {
     const ws = ctx.createBufferSource(); ws.buffer = noiseBuf; ws.loop = true;
     windF = ctx.createBiquadFilter(); windF.type = 'bandpass'; windF.frequency.value = 380; windF.Q.value = 0.65;
     windG = ctx.createGain(); windG.gain.value = 0;
-    ws.connect(windF); windF.connect(windG); windG.connect(bus); ws.start();
+    ws.connect(windF); windF.connect(windG); windG.connect(sfxBus); ws.start();
 
     nextT = now + 0.1;
     setInterval(schedule, 25);
@@ -171,7 +195,7 @@ const AU = (() => {
       g.setValueAtTime(Math.max(0.0001, lv * 0.14), nextT);
       g.linearRampToValueAtTime(lv, nextT + 0.02);
       g.exponentialRampToValueAtTime(Math.max(0.0001, lv * 0.18), nextT + 0.25 / r);
-      if (playing && step % 2 === 1) burst(nextT, 0.045, 0.013, 'highpass', 7200, 0.5);
+      if (playing && step % 2 === 1) burst(nextT, 0.045, 0.013, 'highpass', 7200, 0.5, musicBus);
       step++;
       nextT += 0.288 / r;
     }
@@ -185,7 +209,7 @@ const AU = (() => {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(peak, t + att);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(dest || bus);
+    o.connect(g); g.connect(dest || sfxBus);
     o.start(t); o.stop(t + dur + 0.05);
     return g;
   }
@@ -198,7 +222,7 @@ const AU = (() => {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(peak, t + (att || Math.min(0.012, dur * 0.3)));
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(fl); fl.connect(g); g.connect(dest || bus);
+    s.connect(fl); fl.connect(g); g.connect(dest || sfxBus);
     s.start(t, Math.random() * 1.5); s.stop(t + dur + 0.05);
     return g;
   }
@@ -217,9 +241,16 @@ const AU = (() => {
     init,
     get ready() { return !!ctx; },
     get muted() { return muted; },
+    setVolumes(m, mu, sf) {
+      vol.master = m; vol.music = mu; vol.sfx = sf;
+      if (!ctx) return; const t = ctx.currentTime;
+      master.gain.setTargetAtTime(masterLevel(), t, 0.05);
+      musicBus.gain.setTargetAtTime(mu, t, 0.05); padSend.gain.setTargetAtTime(0.8 * mu, t, 0.05);
+      sfxBus.gain.setTargetAtTime(sf, t, 0.05); sfxRev.gain.setTargetAtTime(sf, t, 0.05);
+    },
     toggleMute() {
       muted = !muted;
-      if (ctx) master.gain.setTargetAtTime(muted ? 0 : 0.9, ctx.currentTime, 0.03);
+      if (ctx) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.03);
       return muted;
     },
     suspend(on) { if (ctx) on ? ctx.suspend() : ctx.resume(); },
@@ -238,8 +269,8 @@ const AU = (() => {
       const c = CH[chord];
       burst(t, 0.42, 0.2, 'bandpass', dir > 0 ? 320 : 2600, 1.1, null, dir > 0 ? 2600 : 320, 0.09);
       const top = hz(c.n[3] + 12), fifth = hz(c.n[1] + 12);
-      osc('triangle', top, top, t, 0.7, 0.085, revIn);
-      osc('sine', fifth, fifth, t + 0.045, 0.6, 0.06, revIn);
+      osc('triangle', top, top, t, 0.7, 0.085, sfxRev);
+      osc('sine', fifth, fifth, t + 0.045, 0.6, 0.06, sfxRev);
       osc('sine', hz(c.b + 12) * 2, hz(c.b + 12), t, 0.16, 0.16);
     },
     land(v) {
@@ -257,10 +288,10 @@ const AU = (() => {
       if (!ctx) return; const t = ctx.currentTime;
       osc('sine', 110, 34, t, 0.42, 0.7);
       burst(t, 0.4, 0.34, 'highpass', 2100, 0.4);
-      burst(t, 0.5, 0.12, 'bandpass', 900, 0.8, revIn);
+      burst(t, 0.5, 0.12, 'bandpass', 900, 0.8, sfxRev);
       for (let i = 0; i < 9; i++) {
         const f = 1700 + Math.random() * 4200, tt = t + Math.random() * 0.13;
-        osc('sine', f, f * 0.985, tt, 0.1 + Math.random() * 0.24, 0.05, i % 2 ? revIn : bus);
+        osc('sine', f, f * 0.985, tt, 0.1 + Math.random() * 0.24, 0.05, i % 2 ? sfxRev : sfxBus);
       }
     },
     respawn() {
@@ -270,14 +301,14 @@ const AU = (() => {
     },
     checkpoint() {
       if (!ctx) return; const t = ctx.currentTime, c = CH[chord];
-      osc('triangle', hz(c.n[1] + 12), hz(c.n[1] + 12), t, 0.5, 0.09, revIn);
-      osc('triangle', hz(c.n[3] + 12), hz(c.n[3] + 12), t + 0.09, 0.7, 0.09, revIn);
+      osc('triangle', hz(c.n[1] + 12), hz(c.n[1] + 12), t, 0.5, 0.09, sfxRev);
+      osc('triangle', hz(c.n[3] + 12), hz(c.n[3] + 12), t + 0.09, 0.7, 0.09, sfxRev);
     },
     stage() {
       if (!ctx) return; const t = ctx.currentTime, c = CH[chord];
       osc('sine', 82, 38, t, 0.9, 0.55);
-      burst(t, 1.1, 0.1, 'bandpass', 300, 0.9, revIn, 4200, 0.6);
-      c.n.forEach((m, i) => osc('triangle', hz(m + 12), hz(m + 12), t + i * 0.07, 1.1, 0.05, revIn));
+      burst(t, 1.1, 0.1, 'bandpass', 300, 0.9, sfxRev, 4200, 0.6);
+      c.n.forEach((m, i) => osc('triangle', hz(m + 12), hz(m + 12), t + i * 0.07, 1.1, 0.05, sfxRev));
     },
     // bullet-time: the whole mix sinks in pitch and brightness
     setRate(r) {
@@ -304,8 +335,7 @@ const AU = (() => {
 
 const canvas = $('c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
-let PR = Math.min(window.devicePixelRatio || 1, 2);
-renderer.setPixelRatio(PR);
+let PR = 1;                                        // set by applyQuality()
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -316,8 +346,8 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(HORIZON, 70, 310);
 const camera = new THREE.PerspectiveCamera(64, innerWidth / innerHeight, 0.1, 1400);
 
-const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth * PR, innerHeight * PR, { type: THREE.HalfFloatType, samples: 4 }));
-composer.addPass(new RenderPass(scene, camera));
+let composer = null;                               // built by applyQuality()
+const renderPass = new RenderPass(scene, camera);
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.42, 0.88);
 // Chroma-keyed high-pass: only saturated light (the sphere, the trims) blooms,
 // so sunlit travertine stays crisp instead of hazing out.
@@ -333,8 +363,7 @@ bloom.materialHighPassFilter.fragmentShader = /* glsl */`
   }`;
 bloom.materialHighPassFilter.needsUpdate = true;
 bloom.highPassUniforms.smoothWidth.value = 0.12;
-composer.addPass(bloom);
-composer.addPass(new OutputPass());
+const outputPass = new OutputPass();
 
 /* light — the sun rides the gravity frame, so shadows sweep when the world turns */
 const SUN_BASE = new THREE.Vector3(-0.55, 0.75, 0.4).normalize();
@@ -1176,7 +1205,7 @@ const game = {
   state: 'menu', paused: false, sim: new Sim(), cpi: 0, stage: null,
   ts: 1, focus: 1, focusOn: false, focusLock: false, focusIdle: 0,
   hitstop: 0, deadT: 0, flash: 0, pop: 1, squash: 0, squashV: 0, hot: 0,
-  time: 0, startT: 0, best: +(localStorage.getItem('parallax.best') || 0), auto: false, deaths: 0,
+  time: 0, startT: 0, best: +store.get('parallax.best', 0) || 0, auto: false, deaths: 0, glow: true,
 };
 const cam = { phi: 0, phiV: 0, phiT: 0, f: new THREE.Vector3(), kick: 0, kickV: 0, trauma: 0, fov: 64, lean: 0, blend: 0 };
 const pilot = new Pilot();
@@ -1188,7 +1217,7 @@ const prev = new THREE.Vector3(), bp = new THREE.Vector3(), lastBp = new THREE.V
 const hud = {
   root: $('hud'), dist: $('dist'), spd: $('spd'), spdBar: $('spdBar'), focusPct: $('focusPct'), focusBar: $('focusBar'), best: $('best'),
   stageNum: $('stageNum'), stageName: $('stageName'), gdeg: $('gdeg'), gside: $('gside'), gworld: $('gworld'),
-  sides: [0, 1, 2, 3].map(i => $('gs' + i)), gcd: $('gcd'), gball: $('gball'), prompt: $('prompt'), card: $('card'), toast: $('toast'),
+  sides: [0, 1, 2, 3].map(i => $('gs' + i)), gcd: $('gcd'), gball: $('gball'), orb: $('orbRing'), orbArc: $('orbArc'), fps: $('fps'), prompt: $('prompt'), card: $('card'), toast: $('toast'),
   vignette: $('fx-vignette'), flash: $('fx-flash'), start: $('start'), pause: $('pause'), cache: {},
 };
 function setText(key, v) { if (hud.cache[key] !== v) { hud.cache[key] = v; hud[key].textContent = v; } }
@@ -1209,7 +1238,7 @@ function setStage(st, announce) {
 }
 function saveBest() {
   const d = Math.floor(game.sim.d);
-  if (d > game.best) { game.best = d; localStorage.setItem('parallax.best', d); }
+  if (d > game.best) { game.best = d; store.set('parallax.best', d); }
 }
 
 function resetRun() {
@@ -1296,9 +1325,14 @@ function respawn() {
 
 /* input */
 addEventListener('keydown', e => {
+  if (settingsOpen) {
+    if (e.code === 'Escape' || e.code === 'KeyO') { e.preventDefault(); closeSettings(); }
+    return;
+  }
   if (['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
   if (e.repeat) return;
   keys[e.code] = true;
+  if (e.code === 'KeyO') return openSettings();
   if (e.code === 'KeyM') return toggleSound();
   if (game.state === 'menu') { if (e.code === 'Space' || e.code === 'Enter') startGame(); return; }
   if (e.code === 'KeyP' || e.code === 'Escape') return togglePause();
@@ -1320,9 +1354,79 @@ addEventListener('mousemove', e => {
   hud.start.style.setProperty('--mx', (e.clientX / innerWidth - 0.5).toFixed(3));
   hud.start.style.setProperty('--my', (e.clientY / innerHeight - 0.5).toFixed(3));
 });
+/* settings panel */
+let settingsOpen = false, pausedBySettings = false, resetArm = 0;
+const st = { root: $('settings'), perf: $('stPerf'), qnote: $('stQualNote'), reset: $('stReset') };
+function updateSettingsUI() {
+  for (const seg of st.root.querySelectorAll('.seg')) {
+    for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === String(S[seg.dataset.key]));
+  }
+  for (const r of st.root.querySelectorAll('input[type=range]')) {
+    const k = r.dataset.key;
+    r.value = S[k];
+    r.style.setProperty('--p', ((S[k] - +r.min) / (+r.max - +r.min) * 100).toFixed(1) + '%');
+    const o = st.root.querySelector(`output[data-key="${k}"]`);
+    if (o) o.textContent = k === 'fov' ? S[k] + '°' : S[k];
+  }
+  st.qnote.textContent = S.quality === 'auto' ? `ADJUSTS ITSELF · NOW ${perf.level ? QUALITY[perf.level].label : '—'}`
+    : S.quality === 'low' ? 'BEST FOR CHROMEBOOKS + OLDER LAPTOPS'
+    : S.quality === 'high' ? 'SHARPEST · NEEDS A GOOD GPU' : 'BALANCED';
+  hud.fps.classList.toggle('on', S.fps);
+}
+function setSetting(k, v) {
+  S[k] = v; saveSettings();
+  if (k === 'quality') setQualitySetting(v);
+  if (k === 'master' || k === 'music' || k === 'sfx') AU.setVolumes(S.master / 100, S.music / 100, S.sfx / 100);
+  updateSettingsUI();
+}
+function openSettings() {
+  if (settingsOpen) return;
+  AU.init();                                         // so volume changes can be heard right away
+  for (const k in keys) keys[k] = false;
+  settingsOpen = true;
+  st.root.classList.add('on'); st.root.setAttribute('aria-hidden', 'false');
+  if (game.state !== 'menu' && !game.paused) { game.paused = true; pausedBySettings = true; }
+  updateSettingsUI(); updatePerfReadout(); AU.click();
+  $('stClose').focus({ preventScroll: true });
+}
+function closeSettings() {
+  if (!settingsOpen) return;
+  settingsOpen = false;
+  st.root.classList.remove('on'); st.root.setAttribute('aria-hidden', 'true');
+  if (pausedBySettings) { game.paused = false; pausedBySettings = false; last = performance.now(); }
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  AU.click();
+}
+function updatePerfReadout() {
+  st.perf.textContent = `${Math.round(perf.fps)} FPS · ${Math.round(innerWidth * PR)}×${Math.round(innerHeight * PR)} PX · ${perf.level ? QUALITY[perf.level].label : ''}`;
+}
+for (const seg of st.root.querySelectorAll('.seg')) seg.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const v = b.dataset.v === 'true' ? true : b.dataset.v === 'false' ? false : b.dataset.v;
+  setSetting(seg.dataset.key, v); AU.click();
+});
+for (const r of st.root.querySelectorAll('input[type=range]')) {
+  r.addEventListener('input', () => setSetting(r.dataset.key, +r.value));
+  r.addEventListener('change', () => { if (r.dataset.key === 'sfx' || r.dataset.key === 'master') AU.land(14); });
+}
+st.reset.addEventListener('click', () => {
+  if (resetArm && performance.now() - resetArm < 3000) {
+    game.best = 0; store.del('parallax.best'); resetArm = 0;
+    st.reset.textContent = 'BEST DISTANCE CLEARED'; AU.click();
+  } else {
+    resetArm = performance.now(); st.reset.textContent = 'CLICK AGAIN TO CONFIRM';
+    setTimeout(() => { if (resetArm && performance.now() - resetArm >= 2900) { resetArm = 0; st.reset.textContent = 'RESET BEST DISTANCE'; } }, 3000);
+  }
+});
+$('stClose').addEventListener('click', closeSettings);
+st.root.querySelector('.st-scrim').addEventListener('click', closeSettings);
+$('btnSettings').addEventListener('click', e => { openSettings(); e.currentTarget.blur(); });
+$('btnStartSettings').addEventListener('click', e => { e.stopPropagation(); openSettings(); });
+function ringDeny() { hud.orb.classList.remove('deny'); void hud.orb.getBoundingClientRect(); hud.orb.classList.add('deny'); }
+
 addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth * PR, innerHeight * PR);
+  composer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
 });
 
@@ -1358,7 +1462,7 @@ function simulate(raw) {
       while (flipQ.length) {                           // buffered presses fire the moment a shift is allowed
         const q = flipQ[0];
         if (s.canFlip) { flipQ.shift(); doFlip(q.dir); }
-        else if (game.time - q.t > GRAV_BUFFER) { flipQ.shift(); AU.deny(); }
+        else if (game.time - q.t > GRAV_BUFFER) { flipQ.shift(); AU.deny(); ringDeny(); }
         else break;
       }
       let ax = ((keys.KeyD || keys.ArrowRight) ? 1 : 0) - ((keys.KeyA || keys.ArrowLeft) ? 1 : 0);
@@ -1427,7 +1531,7 @@ function present(raw) {
   const vis = ballG.visible;
   halo.visible = vis; halo.position.copy(bp);
   halo.material.opacity = 0.26 + 0.05 * Math.sin(game.time * 5);
-  ballLight.visible = vis; ballLight.position.set(bp.x + upx * 0.35, bp.y + upy * 0.35, bp.z);
+  ballLight.visible = vis && game.glow; ballLight.position.set(bp.x + upx * 0.35, bp.y + upy * 0.35, bp.z);
   pool.visible = vis && s.grounded;
   pool.position.set(bp.x + f.dx * (R - 0.03), bp.y + f.dy * (R - 0.03), bp.z);
   pool.quaternion.setFromUnitVectors(_v.set(0, 0, 1), _look.set(upx, upy, 0));
@@ -1442,7 +1546,7 @@ function present(raw) {
   const phi = cam.phi + cam.lean, ux = -Math.sin(phi), uy = Math.cos(phi);
   cam.f.x = damp(cam.f.x, bp.x, 11, raw); cam.f.y = damp(cam.f.y, bp.y, 11, raw); cam.f.z = bp.z;
   const speed = Math.abs(s.vz), sn = clamp((speed - 12) / 22, 0, 1);
-  const hgt = 3.5 + cam.kick, back = 7.3 + sn * 1.3;
+  const hgt = 3.5 + cam.kick * (S.shake ? 1 : 0.25), back = 7.3 + sn * 1.3;
   _pos.set(cam.f.x + ux * hgt, cam.f.y + uy * hgt, cam.f.z + back);
   _look.set(cam.f.x + ux * 1.0, cam.f.y + uy * 1.0, cam.f.z - 9.5);
   let upX = ux, upY = uy;
@@ -1452,10 +1556,10 @@ function present(raw) {
     _pos.lerpVectors(_v.set(10.5 + Math.sin(t * 0.17) * 1.6, 4.6 + Math.sin(t * 0.11) * 0.7, 17), _pos, m);
     _look.lerpVectors(_v.set(-5, -6.5, -34), _look, m);
   }
-  const tq = cam.trauma * cam.trauma, tt = game.time * 47;
+  const tq = S.shake ? cam.trauma * cam.trauma : 0, tt = game.time * 47;
   _pos.x += Math.sin(tt) * tq * 0.34; _pos.y += Math.sin(tt * 1.31 + 2) * tq * 0.34;
   camera.position.copy(_pos); camera.up.set(upX, upY, 0); camera.lookAt(_look);
-  const fovT = 62 + sn * 9 - (1 - game.ts) / (1 - FOCUS_TS) * 8;
+  const fovT = S.fov + sn * 9 - (1 - game.ts) / (1 - FOCUS_TS) * 8;
   cam.fov = damp(cam.fov, fovT, 7, raw);
   if (Math.abs(camera.fov - cam.fov) > 0.01) { camera.fov = cam.fov; camera.updateProjectionMatrix(); }
 
@@ -1483,7 +1587,7 @@ function present(raw) {
   hud.focusBar.style.transform = `scaleX(${game.focus.toFixed(3)})`;
   hud.focusBar.classList.toggle('locked', game.focusLock || game.focus < FOCUS_MIN);
   const cdOff = (100 - 100 * clamp(s.cd / GRAV_CD, 0, 1)).toFixed(1);
-  if (hud.cache.cd !== cdOff) { hud.cache.cd = cdOff; hud.gcd.setAttribute('stroke-dashoffset', cdOff); }
+  if (hud.cache.cd !== cdOff) { hud.cache.cd = cdOff; hud.gcd.style.strokeDashoffset = cdOff; }
   hud.gball.classList.toggle('spent', playing && s.airborne && s.airUsed);
   setText('best', String(Math.max(game.best, d)).padStart(4, '0'));
   const side = mod4(s.gi);
@@ -1495,25 +1599,87 @@ function present(raw) {
   }
   hud.gworld.setAttribute('transform', `rotate(${(cam.phi * 180 / Math.PI).toFixed(2)})`);
   let pr = '';
-  if (playing && !game.auto) for (const p of PROMPTS) if (d >= p[0] && d < p[1]) pr = p[2];
+  if (playing && !game.auto && S.hints) for (const p of PROMPTS) if (d >= p[0] && d < p[1]) pr = p[2];
   if (hud.cache.prompt !== pr) { hud.cache.prompt = pr; if (pr) hud.prompt.innerHTML = pr; hud.prompt.classList.toggle('on', !!pr); }
   game.flash = Math.max(0, game.flash - raw * 2.6);
-  hud.flash.style.opacity = game.flash.toFixed(3);
+  hud.flash.style.opacity = (S.flash ? game.flash : 0).toFixed(3);
+
+  // shift cooldown, drawn around the orb itself
+  const ringOn = S.ring && playing && vis, cdFrac = clamp(s.cd / GRAV_CD, 0, 1), spent = s.airborne && s.airUsed;
+  if (ringOn) {
+    camera.updateMatrixWorld();
+    _v.copy(bp).project(camera);
+    _look.copy(bp).addScaledVector(camera.up, R * 1.6).project(camera);
+    const px = (_v.x + 1) / 2 * innerWidth, py = (1 - _v.y) / 2 * innerHeight;
+    const rad = Math.max(16, Math.hypot((_look.x - _v.x) / 2 * innerWidth, (_look.y - _v.y) / 2 * innerHeight));
+    hud.orb.style.transform = `translate(${(px - rad).toFixed(1)}px, ${(py - rad).toFixed(1)}px)`;
+    const sz = Math.round(rad * 2);
+    if (hud.cache.orbSz !== sz) { hud.cache.orbSz = sz; hud.orb.style.width = hud.orb.style.height = sz + 'px'; }
+  }
+  const ringState = !ringOn ? 'off' : spent ? 'spent' : cdFrac > 0 ? 'cool' : 'ready';
+  if (hud.cache.ring !== ringState) {
+    if (hud.cache.ring === 'cool' && ringState === 'ready') { hud.orb.classList.remove('pop'); void hud.orb.getBoundingClientRect(); hud.orb.classList.add('pop'); }
+    hud.cache.ring = ringState; hud.orb.dataset.state = ringState;
+  }
+  const arcOff = (100 - 100 * cdFrac).toFixed(1);
+  if (hud.cache.orbOff !== arcOff) { hud.cache.orbOff = arcOff; hud.orbArc.style.strokeDashoffset = arcOff; }
 }
 
-let last = performance.now(), frames = 0, slow = 0;
+let last = performance.now(), readoutT = 0;
 function frame(now) {
   requestAnimationFrame(frame);
-  const raw = Math.min(0.05, Math.max(0, (now - last) / 1000)); last = now;
+  const rawFull = Math.max(0, (now - last) / 1000), raw = Math.min(0.05, rawFull); last = now;
   if (!game.paused) { game.time += raw; simulate(raw); present(raw); }
   composer.render();
-  // one-shot quality step-down for slow GPUs
-  if (frames < 150 && raw > 0.001 && raw < 0.045 && ++frames > 30) { slow += raw; if (frames === 150 && slow / 120 > 0.024) degrade(); }
+  watchPerf(rawFull);
+  if ((readoutT += rawFull) > 0.25) {
+    readoutT = 0;
+    if (S.fps) hud.fps.textContent = String(Math.round(perf.fps)).padStart(2, '0') + ' FPS';
+    if (settingsOpen) updatePerfReadout();
+  }
 }
-function degrade() {
-  PR = 1; renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
-  sun.shadow.mapSize.set(2048, 2048);
-  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+
+/* graphics quality */
+const QUALITY = {
+  low: { label: 'LOW', cap: 1, scale: 0.75, shadow: 1024, samples: 0, bloom: false, glow: false },
+  medium: { label: 'MEDIUM', cap: 1, scale: 1, shadow: 2048, samples: 2, bloom: true, glow: true },
+  high: { label: 'HIGH', cap: 2, scale: 1, shadow: 4096, samples: 4, bloom: true, glow: true },
+};
+const LEVELS = ['low', 'medium', 'high'];
+const perf = { level: null, n: 0, sum: 0, fps: 60 };
+function buildComposer(samples) {
+  if (composer) { composer.renderTarget1.dispose(); composer.renderTarget2.dispose(); }
+  composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples }));
+  composer.addPass(renderPass); composer.addPass(bloom); composer.addPass(outputPass);
+  composer.setPixelRatio(PR); composer.setSize(innerWidth, innerHeight);   // the composer applies PR itself
+}
+function applyQuality(level) {
+  const q = QUALITY[level], prevSamples = perf.level ? QUALITY[perf.level].samples : -1;
+  perf.level = level; perf.n = 0; perf.sum = 0;
+  PR = Math.min(window.devicePixelRatio || 1, q.cap) * q.scale;
+  renderer.setPixelRatio(PR); renderer.setSize(innerWidth, innerHeight);
+  if (!composer || q.samples !== prevSamples) buildComposer(q.samples);
+  else { composer.setPixelRatio(PR); composer.setSize(innerWidth, innerHeight); }
+  bloom.enabled = q.bloom;
+  if (sun.shadow.mapSize.x !== q.shadow) {
+    sun.shadow.mapSize.set(q.shadow, q.shadow);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  }
+  game.glow = q.glow;
+  updateSettingsUI();
+}
+const autoStart = () => (navigator.hardwareConcurrency || 4) <= 4 || (window.devicePixelRatio || 1) > 1.75 ? 'medium' : 'high';
+function setQualitySetting(v) { applyQuality(v === 'auto' ? autoStart() : v); }
+// Auto: average real frame times (skipping background/throttled frames) and step down while it's slow.
+function watchPerf(raw) {
+  if (raw > 0.001 && raw < 0.25) perf.fps = lerp(perf.fps, 1 / raw, 0.06);
+  if (S.quality !== 'auto' || game.paused || raw <= 0.001 || raw >= 0.045) return;
+  if (++perf.n <= 30) return;
+  perf.sum += raw;
+  if (perf.n === 150) {
+    const i = LEVELS.indexOf(perf.level);
+    if (perf.sum / 120 > 0.022 && i > 0) applyQuality(LEVELS[i - 1]);
+  }
 }
 
 /* debug / verification surface */
@@ -1539,7 +1705,7 @@ function selftest(maxD = INF0, seedRuns = 1) {
   return out;
 }
 window.PARALLAX = {
-  game, W, cam, selftest,
+  game, W, cam, selftest, S, perf, applyQuality,
   demo(on = true) { game.auto = on; pilot.reset(game.sim.d); if (on) startGame(); return on; },
   // step the game synchronously (verification without relying on rAF timing)
   advance(sec, keysDown = {}) {
@@ -1551,6 +1717,7 @@ window.PARALLAX = {
   warp(i) { game.cpi = clamp(i, 0, W.cps.length - 1); if (game.state === 'menu') startGame(); respawn(); return W.cps[game.cpi]; },
 };
 
+setQualitySetting(S.quality);
 resetRun();
 present(0);
 requestAnimationFrame(frame);
