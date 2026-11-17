@@ -28,7 +28,14 @@ const TAU = Math.PI * 2, HP = Math.PI / 2;
 const R = 0.5;            // player radius
 const TUBE = 4;           // distance from the travel axis to every running surface
 const G = 38;             // gravity
-const LAT = 10.5;         // max lateral speed
+const LAT_MAX = 12;       // top sideways speed
+const STEER_G = 30;       // sideways push on the ground (m/s²) — steering adds momentum, it doesn't set speed
+const STEER_A = 9;        // sideways push in the air
+const COUNTER = 1.35;     // steering against your slide bites harder, so stopping is learnable
+const FRICTION_G = 1.5;   // how fast a slide bleeds off on the ground (per second)
+const FRICTION_A = 0.25;  // ...and in the air
+// handling gets heavier with speed: 1.15× grip at 15 m/s down to 0.78× at 35 m/s
+const handling = speed => lerp(1.15, 0.78, clamp((speed - 15) / 20, 0, 1));
 const VT = 46;            // terminal fall speed
 const GRAV_CD = 0.4;      // seconds between gravity shifts
 const GRAV_COMBO = 0.2;   // a second press inside this window turns 180° as one action
@@ -497,6 +504,15 @@ class GeoBuf {
     f ? this.i.push(i0, i2, i1) : this.i.push(i0, i1, i2);
   }
   quad(a, b, c, d, n) { this.tri(a, b, c, n); this.tri(a, c, d, n); }
+  // oriented box: centre c, unit axes u/v/w, half extents h
+  obox(o) {
+    const ax = [o.u, o.v, o.w];
+    const pt = (s0, s1, s2) => [0, 1, 2].map(i => [o.cx, o.cy, o.cz][i] + s0 * o.h[0] * o.u[i] + s1 * o.h[1] * o.v[i] + s2 * o.h[2] * o.w[i]);
+    for (let k = 0; k < 3; k++) for (const sg of [-1, 1]) {
+      const c4 = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([p, q]) => { const sv = [0, 0, 0]; sv[k] = sg; sv[(k + 1) % 3] = p; sv[(k + 2) % 3] = q; return pt(sv[0], sv[1], sv[2]); });
+      this.quad(c4[0], c4[1], c4[2], c4[3], ax[k].map(x => x * sg));
+    }
+  }
   box(x0, x1, y0, y1, z0, z1) {
     this.quad([x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1], [1, 0, 0]);
     this.quad([x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [-1, 0, 0]);
@@ -561,6 +577,43 @@ const collider = (s, a0, a1, h0, h1, d0, d1) => C.boxes.push(fbox(s, a0, a1, h0,
 const slab = (s, d0, d1, a0 = -4, a1 = 4) => solid(s, a0, a1, -1, 0, d0, d1);
 const haz = (s, d0, d1, a0, a1, h = 2.6) => solid(s, a0, a1, 0, h, d0, d1, { haz: true });
 const catcher = (s, a0, a1, d0, d1) => solid(s, a0, a1, -11, -8.6, d0, d1, { collide: false });
+
+/* Tilted slab: a rigid box whose top runs from height h0 at d0 to h1 at d1 (a ramp), banked by `bank`
+   radians around the travel axis (positive raises the +a edge). Collides as a true rotated box. */
+function obFrame(s, a0, a1, d0, d1, h0, h1, bank, th) {
+  const f = FR[s], aM = (a0 + a1) / 2, L = d1 - d0, pt = Math.atan2(h1 - h0, L);
+  const A = [f.rx, f.ry, 0], U = [-f.dx, -f.dy, 0], F = [0, 0, -1];
+  const cb = Math.cos(bank), sb = Math.sin(bank), cp = Math.cos(pt), sp = Math.sin(pt);
+  const A1 = A.map((x, i) => x * cb + U[i] * sb), U1 = U.map((x, i) => x * cb - A[i] * sb);
+  const F2 = F.map((x, i) => x * cp + U1[i] * sp), U2 = U1.map((x, i) => x * cp - F[i] * sp);
+  const T = P(s, aM, (h0 + h1) / 2, (d0 + d1) / 2);
+  return { cx: T[0] - U2[0] * th / 2, cy: T[1] - U2[1] * th / 2, cz: T[2] - U2[2] * th / 2, u: A1, v: U2, w: F2, h: [(a1 - a0) / 2, th / 2, L / 2 / cp] };
+}
+function obAABB(o) {
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
+  for (const a of [-1, 1]) for (const b of [-1, 1]) for (const c of [-1, 1]) {
+    const x = o.cx + a * o.h[0] * o.u[0] + b * o.h[1] * o.v[0] + c * o.h[2] * o.w[0];
+    const y = o.cy + a * o.h[0] * o.u[1] + b * o.h[1] * o.v[1] + c * o.h[2] * o.w[1];
+    const z = o.cz + a * o.h[0] * o.u[2] + b * o.h[1] * o.v[2] + c * o.h[2] * o.w[2];
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+  }
+  return { x0, x1, y0, y1, z0, z1 };
+}
+function oslab(s, a0, a1, d0, d1, h0 = 0, h1 = 0, bank = 0) {
+  const ob = obFrame(s, a0, a1, d0, d1, h0, h1, bank, 1);
+  const b = { ...obAABB(ob), haz: false, mv: null, ob };
+  C.trav.obox(ob); C.boxes.push(b); C.d1 = Math.max(C.d1, d1 + 1);
+  return ob;
+}
+// accent strip lying on top of a tilted slab: along one long edge (side ±1), or across its far end (side 0)
+function oTrim(ob, side) {
+  const o = { ...ob, h: ob.h.slice() }, lift = ob.h[1] + 0.025;
+  let off = [0, 0, 0];
+  if (side) { o.h = [0.12, 0.03, ob.h[2]]; off = ob.u.map((x, i) => x * side * (ob.h[0] - 0.12)); }
+  else { o.h = [ob.h[0], 0.03, 0.14]; off = ob.w.map((x, i) => x * (ob.h[2] - 0.6)); }
+  o.cx = ob.cx + off[0] + ob.v[0] * lift; o.cy = ob.cy + off[1] + ob.v[1] * lift; o.cz = ob.cz + off[2] + ob.v[2] * lift;
+  C.acc.obox(o);
+}
 
 function accBox(s, a0, a1, h0, h1, d0, d1) { const b = fbox(s, a0, a1, h0, h1, d0, d1); C.acc.box(b.x0, b.x1, b.y0, b.y1, b.z0, b.z1); }
 function flatPoly(s, pts, h = 0.035) {
@@ -793,7 +846,7 @@ function buildWorld() {
   W.cps.push({ d: 0, side: 0, a: 0 });
   W.stages = STAGES.slice();
   buildStage1(); buildStage2(); buildStage3();
-  W.gen = { d: INF0, side: 0, zone: 3, lastCp: 1216, last: '' };
+  W.gen = { d: INF0, side: 0, zone: 3, lastCp: 1216, last: '', intro: [genBeam, genBank, genRun, genKicker, genDip] };
 }
 
 /* ═══ 06  INFINITE PROCEDURAL GENERATOR ═════════════════════════════════
@@ -844,7 +897,7 @@ function genRun(g, v, r, k) {
       const w = lerp(2.6, 1.9, k), c = gridA((r() * 2 - 1) * (3.4 - w / 2));
       haz(s, od, od + dep, -4, c - w / 2, hh); haz(s, od, od + dep, c + w / 2, 4, hh);
     } else if (t === 5) {                              // slalom: block left, then block right
-      const flip = r() > 0.5 ? 1 : -1, gap = v * lerp(0.5, 0.4, k);
+      const flip = r() > 0.5 ? 1 : -1, gap = v * lerp(0.66, 0.52, k);
       haz(s, od, od + 1.4, flip > 0 ? -4 : -0.3, flip > 0 ? 0.3 : 4, hh);
       haz(s, od + gap, od + gap + 1.4, flip > 0 ? -0.3 : -4, flip > 0 ? 4 : 0.3, hh);
       od += gap;
@@ -899,6 +952,87 @@ function genBridge(g, v, r, k) {
   g.d = e + gap + Math.round(v * 0.8); g.last = 'bridge';
 }
 
+function maybeCheckpoint(g, s, d, k) {
+  if (d - g.lastCp > lerp(115, 230, k)) { portal(d + 3); checkpoint(s, d + 5); g.lastCp = d + 5; return 14; }
+  return 0;
+}
+// narrow beams over the void; at higher zones they jog sideways, and the overlap to switch beams gets shorter
+function genBeam(g, v, r, k) {
+  const s = g.side, d = g.d, w = lerp(2.6, 1.6, k), n = k < 0.25 ? 1 : k < 0.6 ? 2 : 3;
+  let lead = Math.round(v * 0.6);
+  lead += maybeCheckpoint(g, s, d, k);
+  slab(s, d, d + lead); edgeTrim(s, d + lead);
+  let x = d + lead, c = gridA((r() * 2 - 1) * 1.2);
+  for (let i = 0; i < n; i++) {
+    const L = Math.round(v * lerp(1.4, 1.0, k));
+    solid(s, c - w / 2, c + w / 2, -1, 0, x, x + L);
+    flatRect(s, c - w / 2, c - w / 2 + 0.1, x + 0.4, x + L - 0.4); flatRect(s, c + w / 2 - 0.1, c + w / 2, x + 0.4, x + L - 0.4);
+    if (i < n - 1) {
+      const nc = clamp(gridA(c + (r() > 0.5 ? 1 : -1) * w * 0.9), -2.4, 2.4);
+      const ov = Math.round(v * lerp(0.45, 0.32, k));
+      x += L - ov; c = nc === c ? gridA(-c || w * 0.9) : nc;
+    } else x += L;
+  }
+  catcher(s, -6, 12, d + lead - 2, x + 6);
+  slab(s, x, x + Math.round(v * 0.7));
+  g.d = x + Math.round(v * 0.7); g.last = 'beam';
+}
+// banked section: you drop onto a slab tilted sideways, gravity pulls you toward the low edge, then a ramp brings you back up
+function genBank(g, v, r, k) {
+  const s = g.side, d = g.d, dir = r() > 0.5 ? 1 : -1, bank = dir * lerp(9, 17, k) * Math.PI / 180;
+  const hw = lerp(4, 3, k), rise = hw * Math.sin(Math.abs(bank));
+  let lead = Math.round(v * 0.6);
+  lead += maybeCheckpoint(g, s, d, k);
+  slab(s, d, d + lead); edgeTrim(s, d + lead);
+  const b0 = d + lead, b1 = b0 + Math.round(v * lerp(1.6, 2.3, k)), hc = -rise - 0.12;   // highest edge sits just under the floor you came from
+  const bk = oslab(s, -hw, hw, b0, b1, hc, hc, bank);
+  oTrim(bk, -dir);                                     // orange edge on the low side: that's where gravity takes you
+  const lowTop = hc - rise - 0.15, rl = Math.round(v * 0.9);
+  oslab(s, -4, 4, b1, b1 + rl, lowTop, 0);
+  slab(s, b1 + rl, b1 + rl + Math.round(v * 0.6));
+  catcher(s, -6, 12, b0 - 2, b1 + rl);
+  g.d = b1 + rl + Math.round(v * 0.6); g.last = 'bank';
+}
+// jump ramp: launch over a gap onto a landing pad that gets narrower (and shifted) in later zones
+function genKicker(g, v, r, k) {
+  const s = g.side, d = g.d, rl = Math.round(lerp(9, 11, k)), hgt = lerp(1.0, 1.7, k);
+  let lead = Math.round(v * 0.5);
+  lead += maybeCheckpoint(g, s, d, k);
+  slab(s, d, d + lead + 0.5);
+  const kick = oslab(s, -4, 4, d + lead, d + lead + rl, 0, hgt);
+  oTrim(kick, 0);
+  const pt = Math.atan2(hgt, rl), vu = v * Math.sin(pt), tf = (vu + Math.sqrt(vu * vu + 2 * G * hgt)) / G;
+  const flight = v * Math.cos(pt) * tf, gap = Math.round(flight * lerp(0.55, 0.8, k));
+  const e = d + lead + rl, pw = lerp(8, 4.6, k), pc = k > 0.3 ? gridA((r() * 2 - 1) * (4 - pw / 2)) : 0;
+  const land = Math.round(v * 1.5);
+  solid(s, pc - pw / 2, pc + pw / 2, -1, 0, e + gap, e + gap + land);
+  edgeTrim(s, e + gap + 0.45, pc - pw / 2, pc + pw / 2);
+  if (r() < k * 0.6) landingHazard(s, e + gap + land * 0.75, r, k);
+  catcher(s, -6, 12, e - 2, e + gap + 6);
+  const tail = Math.round(v * 0.5);
+  slab(s, e + gap + land, e + gap + land + tail);
+  g.d = e + gap + land + tail; g.last = 'kicker';
+}
+// dip: downhill speeds you up, the low stretch can hold a gate, then the climb out slows you down
+function genDip(g, v, r, k) {
+  const s = g.side, d = g.d, depth = lerp(2.5, 4.5, k), dl = Math.round(v * 0.9), fl = Math.round(v * 1.2), ul = Math.round(v * 0.9);
+  let lead = Math.round(v * 0.5);
+  lead += maybeCheckpoint(g, s, d, k);
+  slab(s, d, d + lead);
+  const a0 = d + lead, a1 = a0 + dl, a2 = a1 + fl, a3 = a2 + ul;
+  oslab(s, -4, 4, a0, a1 + 0.5, 0, -depth * (dl + 0.5) / dl);
+  solid(s, -4, 4, -depth - 1, -depth, a1, a2);
+  if (k > 0.2) {
+    const c = gridA((r() * 2 - 1) * 1.8), w = lerp(2.8, 2.0, k), gd = a1 + fl * 0.55;
+    solid(s, -4, c - w / 2, -depth, -depth + 2.6, gd, gd + 1.8, { haz: true });
+    solid(s, c + w / 2, 4, -depth, -depth + 2.6, gd, gd + 1.8, { haz: true });
+  }
+  oslab(s, -4, 4, a2 - 0.5, a3, -depth - depth * 0.5 / ul, 0);
+  slab(s, a3, a3 + Math.round(v * 0.5));
+  catcher(s, -6, 12, a0, a3);
+  g.d = a3 + Math.round(v * 0.5); g.last = 'dip';
+}
+
 function genNext() {
   const g = W.gen, r = W.rnd, z = 4 + Math.floor((g.d - INF0) / 1000);
   beginChunk();
@@ -908,10 +1042,11 @@ function genNext() {
     const opts = [
       [genRun, 3], [genSweep, 2 + k],
       [genTurn, (aerial ? 1.6 : 3) + 2 * k], [genFlip, (aerial ? 0.8 : 1.6) + 1.4 * k],
-      [genBridge, g.last === 'bridge' ? 0 : 1.6],
-    ];
+      [genBridge, 1.4], [genBeam, 1.6 + 1.2 * k], [genBank, 1.4 + k], [genKicker, 1.2 + k], [genDip, 1 + 0.6 * k],
+    ].filter(o => o[0].name.slice(3).toLowerCase() !== g.last);
     let pick = r() * opts.reduce((a, o) => a + o[1], 0), fn = genRun;
     for (const o of opts) { if ((pick -= o[1]) < 0) { fn = o[0]; break; } }
+    if (g.intro && g.intro.length) fn = g.intro.shift();
     fn(g, v, r, k);
   }
   endChunk();
@@ -922,6 +1057,39 @@ function ensureGen(d, keepD) {
   if (W.chunks.length && W.chunks[0].d1 < cut) {
     W.chunks = W.chunks.filter(c => { if (c.d1 < cut) { removeChunk(c); return false; } return true; });
     W.boxes = W.chunks.flatMap(c => c.boxes);
+  }
+}
+
+/* closest point on a collider to (x, y, z) at time t; when the point is inside, also the exit normal + depth */
+const _cp = { x: 0, y: 0, z: 0, inside: false, nx: 0, ny: 0, nz: 0, pen: 0 };
+function boxContact(b, x, y, z, t, out) {
+  if (b.ob) {
+    const o = b.ob, dx = x - o.cx, dy = y - o.cy, dz = z - o.cz;
+    const l0 = dx * o.u[0] + dy * o.u[1] + dz * o.u[2], l1 = dx * o.v[0] + dy * o.v[1] + dz * o.v[2], l2 = dx * o.w[0] + dy * o.w[1] + dz * o.w[2];
+    const c0 = clamp(l0, -o.h[0], o.h[0]), c1 = clamp(l1, -o.h[1], o.h[1]), c2 = clamp(l2, -o.h[2], o.h[2]);
+    out.x = o.cx + c0 * o.u[0] + c1 * o.v[0] + c2 * o.w[0];
+    out.y = o.cy + c0 * o.u[1] + c1 * o.v[1] + c2 * o.w[1];
+    out.z = o.cz + c0 * o.u[2] + c1 * o.v[2] + c2 * o.w[2];
+    out.inside = c0 === l0 && c1 === l1 && c2 === l2;
+    if (out.inside) {
+      const e0 = o.h[0] - Math.abs(l0), e1 = o.h[1] - Math.abs(l1), e2 = o.h[2] - Math.abs(l2);
+      let ax = o.u, sg = l0 < 0 ? -1 : 1, e = e0;
+      if (e1 < e) { ax = o.v; sg = l1 < 0 ? -1 : 1; e = e1; }
+      if (e2 < e) { ax = o.w; sg = l2 < 0 ? -1 : 1; e = e2; }
+      out.nx = ax[0] * sg; out.ny = ax[1] * sg; out.nz = ax[2] * sg; out.pen = e;
+    }
+    return;
+  }
+  let ox = 0, oy = 0;
+  if (b.mv) { const o = b.mv.amp * Math.sin(b.mv.w * t + b.mv.ph); ox = b.mv.ux * o; oy = b.mv.uy * o; }
+  const x0 = b.x0 + ox, x1 = b.x1 + ox, y0 = b.y0 + oy, y1 = b.y1 + oy;
+  out.x = clamp(x, x0, x1); out.y = clamp(y, y0, y1); out.z = clamp(z, b.z0, b.z1);
+  out.inside = out.x === x && out.y === y && out.z === z;
+  if (out.inside) {
+    const e = [x - x0, x1 - x, y - y0, y1 - y, z - b.z0, b.z1 - z];
+    let k = 0; for (let j = 1; j < 6; j++) if (e[j] < e[k]) k = j;
+    out.nx = k === 0 ? -1 : k === 1 ? 1 : 0; out.ny = k === 2 ? -1 : k === 3 ? 1 : 0; out.nz = k === 4 ? -1 : k === 5 ? 1 : 0;
+    out.pen = e[k];
   }
 }
 
@@ -936,6 +1104,7 @@ class Sim {
     this.cd = 0; this.combo = 0; this.airUsed = false;
     this.dead = null; this.land = 0; this.nx = 0; this.ny = 1; this.nz = 0;
     this.pad = 0;                                      // extra hazard clearance (autopilot look-ahead only)
+    this.gnx = 0; this.gny = 1; this.gnz = 0;           // normal of the surface we're rolling on
   }
   clone() { return Object.assign(new Sim(), this); }
   get d() { return -this.z; }
@@ -947,6 +1116,12 @@ class Sim {
     this.cd = 0; this.combo = 0; this.airUsed = false;
   }
   get airborne() { return !this.grounded && this.air > AIR_GRACE; }
+  steerAccel() { return (this.grounded ? STEER_G : STEER_A) * handling(-this.vz); }
+  // sideways pull from gravity on a banked surface (0 on flat ground)
+  driftAccel() {
+    const f = FR[mod4(this.gi)], gn = G * (f.dx * this.gnx + f.dy * this.gny);
+    return -gn * (this.gnx * f.rx + this.gny * f.ry);
+  }
   // one shift action per cooldown, and only one per stretch in the air
   get canFlip() { return this.combo > 0 || (this.cd <= 0 && !(this.airborne && this.airUsed)); }
   flip(dir) {
@@ -962,10 +1137,12 @@ class Sim {
     const f = FR[mod4(this.gi)];
     // forward: automatic, eased toward the stage speed
     this.vz += (-speedAt(-this.z) - this.vz) * (1 - Math.exp(-2.4 * dt));
-    // lateral: snappy on the ground, softer in the air
+    // lateral: steering pushes, the ball keeps its slide, friction bleeds it off
     const vl = this.vx * f.rx + this.vy * f.ry;
-    const dv = (ax * LAT - vl) * (1 - Math.exp(-(this.grounded ? 14 : 5.5) * dt));
-    this.vx += f.rx * dv; this.vy += f.ry * dv;
+    let push = ax * this.steerAccel();
+    if (push * vl < 0) push *= COUNTER;
+    const nv = clamp((vl + push * dt) * Math.exp(-(this.grounded ? FRICTION_G : FRICTION_A) * dt), -LAT_MAX, LAT_MAX);
+    this.vx += f.rx * (nv - vl); this.vy += f.ry * (nv - vl);
     // gravity
     this.vx += f.dx * G * dt; this.vy += f.dy * G * dt;
     const vd = this.vx * f.dx + this.vy * f.dy;
@@ -983,27 +1160,19 @@ class Sim {
       for (let i = 0; i < boxes.length; i++) {
         const b = boxes[i];
         if (b.z1 < this.z - R || b.z0 > this.z + R) continue;
-        let ox = 0, oy = 0;
-        if (b.mv) { const o = b.mv.amp * Math.sin(b.mv.w * this.t + b.mv.ph); ox = b.mv.ux * o; oy = b.mv.uy * o; }
-        const x0 = b.x0 + ox, x1 = b.x1 + ox, y0 = b.y0 + oy, y1 = b.y1 + oy;
-        const cx = clamp(this.x, x0, x1), cy = clamp(this.y, y0, y1), cz = clamp(this.z, b.z0, b.z1);
-        const dx = this.x - cx, dy = this.y - cy, dz = this.z - cz, d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 >= R * R) { if (b.haz && this.pad && d2 < (R + this.pad) * (R + this.pad)) { this.dead = 'hit'; return; } continue; }
+        boxContact(b, this.x, this.y, this.z, this.t, _cp);
+        const dx = this.x - _cp.x, dy = this.y - _cp.y, dz = this.z - _cp.z, d2 = dx * dx + dy * dy + dz * dz;
+        if (!_cp.inside && d2 >= R * R) { if (b.haz && this.pad && d2 < (R + this.pad) * (R + this.pad)) { this.dead = 'hit'; return; } continue; }
         let nx, ny, nz, pen;
-        if (d2 > 1e-10) { const dd = Math.sqrt(d2); nx = dx / dd; ny = dy / dd; nz = dz / dd; pen = R - dd; }
-        else {                                         // centre inside the box: leave by the nearest face
-          const e = [this.x - x0, x1 - this.x, this.y - y0, y1 - this.y, this.z - b.z0, b.z1 - this.z];
-          let k = 0; for (let j = 1; j < 6; j++) if (e[j] < e[k]) k = j;
-          nx = k === 0 ? -1 : k === 1 ? 1 : 0; ny = k === 2 ? -1 : k === 3 ? 1 : 0; nz = k === 4 ? -1 : k === 5 ? 1 : 0;
-          pen = e[k] + R;
-        }
+        if (!_cp.inside && d2 > 1e-10) { const dd = Math.sqrt(d2); nx = dx / dd; ny = dy / dd; nz = dz / dd; pen = R - dd; }
+        else { nx = _cp.nx; ny = _cp.ny; nz = _cp.nz; pen = _cp.pen + R; }   // centre inside: leave by the nearest face
         const vn = this.vx * nx + this.vy * ny + this.vz * nz;
         if (b.haz) { this.dead = 'hit'; this.nx = nx; this.ny = ny; this.nz = nz; return; }
         if (nz > 0.8 && vn < -7) { this.dead = 'front'; this.nx = nx; this.ny = ny; this.nz = nz; return; }
         this.x += nx * pen; this.y += ny * pen; this.z += nz * pen;
         if (vn < 0) { this.vx -= nx * vn; this.vy -= ny * vn; this.vz -= nz * vn; }
         if (-(nx * f.dx + ny * f.dy) > 0.5) {
-          grounded = true; gb = b;
+          grounded = true; gb = b; this.gnx = nx; this.gny = ny; this.gnz = nz;
           if (-vn > impact) { impact = -vn; this.nx = nx; this.ny = ny; this.nz = nz; }
         }
       }
@@ -1011,6 +1180,7 @@ class Sim {
     if (grounded) { if (this.air > 0.09 && impact > 3) this.land = impact; this.air = 0; this.airUsed = false; }
     else this.air += dt;
     this.grounded = grounded; this.gb = gb;
+    if (!grounded) { this.gnx = -f.dx; this.gny = -f.dy; this.gnz = 0; }
     if (this.x * f.dx + this.y * f.dy > TUBE + 6.5 || Math.abs(this.x) > 26 || Math.abs(this.y) > 26) {
       this.dead = 'void'; this.nx = -f.dx; this.ny = -f.dy; this.nz = 0;
     }
@@ -1028,7 +1198,9 @@ class Pilot {
   reset(d) { this.hi = W.hints.findIndex(h => h.d >= d); if (this.hi < 0) this.hi = W.hints.length; this.target = 0; this.n = 0; }
   static steer(s, t) {
     const f = FR[mod4(s.gi)], a = s.x * f.rx + s.y * f.ry, vl = s.vx * f.rx + s.vy * f.ry;
-    return clamp((t - a) * 1.5 - vl * 0.1, -1, 1);
+    let want = 22 * (t - a) - 8 * vl;
+    if (s.grounded) want -= s.driftAccel();
+    return clamp(want / s.steerAccel(), -1, 1);
   }
   roll(s0, target, boxes) {
     const s = s0.clone(); let hi = this.hi; s.pad = 0.2;
@@ -1174,10 +1346,9 @@ const shards = (() => {
         p.x += u.vx * dt; p.y += u.vy * dt; p.z += u.vz * dt;
         for (const b of W.boxes) {
           if (b.z1 < p.z - rr || b.z0 > p.z + rr) continue;
-          let ox = 0, oy = 0;
-          if (b.mv) { const o = b.mv.amp * Math.sin(b.mv.w * t + b.mv.ph); ox = b.mv.ux * o; oy = b.mv.uy * o; }
-          const cx = clamp(p.x, b.x0 + ox, b.x1 + ox), cy = clamp(p.y, b.y0 + oy, b.y1 + oy), cz = clamp(p.z, b.z0, b.z1);
-          const dx = p.x - cx, dy = p.y - cy, dz = p.z - cz, d2 = dx * dx + dy * dy + dz * dz;
+          boxContact(b, p.x, p.y, p.z, t, _cp);
+          if (_cp.inside) continue;
+          const dx = p.x - _cp.x, dy = p.y - _cp.y, dz = p.z - _cp.z, d2 = dx * dx + dy * dy + dz * dz;
           if (d2 >= rr * rr || d2 < 1e-9) continue;
           const dd = Math.sqrt(d2), nx = dx / dd, ny = dy / dd, nz = dz / dd, vn = u.vx * nx + u.vy * ny + u.vz * nz;
           p.x += nx * (rr - dd); p.y += ny * (rr - dd); p.z += nz * (rr - dd);
