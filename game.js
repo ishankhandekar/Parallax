@@ -800,7 +800,11 @@ function buildWorld() {
    Every pattern is built from the same vocabulary as the hand-made stages,
    with gaps scaled to the zone speed so reaction windows stay constant.   */
 
-const zoneSpeed = z => Math.min(33, 21 + 2 * (z - 4));
+const zoneSpeed = z => Math.min(35, 21 + 2 * (z - 4));
+// Difficulty: 0 at zone 04, 1 by zone 12. Spacing, timing windows and pattern mix all scale with it.
+const zoneK = z => clamp((z - 4) / 8, 0, 1);
+// Gate centres sit on a 0.6 m grid so the autopilot verifier can line them up; players don't notice.
+const gridA = a => Math.round(a / 0.6) * 0.6;
 
 function genZoneGate(g, z) {
   const s = g.side, v = zoneSpeed(z), str = String(z).padStart(2, '0');
@@ -824,50 +828,72 @@ function genZoneGate(g, z) {
   g.lastCp = d + 6; g.d = d + tail; g.last = 'zone';
 }
 
-function genRun(g, v, r) {
+function genRun(g, v, r, k) {
   const s = g.side, d = g.d, len = Math.round(v * (2.3 + r() * 0.8));
   slab(s, d, d + len);
-  let od = d + v * 0.95;
-  if (d - g.lastCp > 115) { portal(d + 3); checkpoint(s, d + 5); g.lastCp = d + 5; od = d + 5 + v * 1.15; }
+  let od = d + v * lerp(0.95, 0.75, k);
+  if (d - g.lastCp > lerp(115, 230, k)) { portal(d + 3); checkpoint(s, d + 5); g.lastCp = d + 5; od = d + 5 + v * 1.15; }
+  const kinds = k < 0.2 ? 4 : k < 0.5 ? 6 : 7;
   while (od < d + len - v * 0.55) {
-    const t = (r() * 4) | 0, dep = 1.6 + r() * 1.2, hh = 2.2 + r() * 2.4;
+    const t = (r() * kinds) | 0, dep = 1.6 + r() * 1.2, hh = 2.2 + r() * 2.4;
     if (t === 0) haz(s, od, od + dep, -4, -0.5, hh);
     else if (t === 1) haz(s, od, od + dep, 0.5, 4, hh);
     else if (t === 2) haz(s, od, od + dep, -1.5, 1.5, hh + 1.5);
-    else { haz(s, od, od + dep, -4, -1.7, hh); haz(s, od, od + dep, 1.7, 4, hh); }
-    od += v * (1.0 + r() * 0.5);
+    else if (t === 3) { haz(s, od, od + dep, -4, -1.7, hh); haz(s, od, od + dep, 1.7, 4, hh); }
+    else if (t === 4) {                                // gate: one narrow gap, anywhere across the track
+      const w = lerp(2.6, 1.9, k), c = gridA((r() * 2 - 1) * (3.4 - w / 2));
+      haz(s, od, od + dep, -4, c - w / 2, hh); haz(s, od, od + dep, c + w / 2, 4, hh);
+    } else if (t === 5) {                              // slalom: block left, then block right
+      const flip = r() > 0.5 ? 1 : -1, gap = v * lerp(0.5, 0.4, k);
+      haz(s, od, od + 1.4, flip > 0 ? -4 : -0.3, flip > 0 ? 0.3 : 4, hh);
+      haz(s, od + gap, od + gap + 1.4, flip > 0 ? -0.3 : -4, flip > 0 ? 4 : 0.3, hh);
+      od += gap;
+    } else SWEEP(s, od, lerp(2.0, 1.5, k) + r() * 0.5, r());   // sweeper in the middle of a run
+    od += v * lerp(1.0, 0.66, k) * (1 + r() * 0.45);
   }
   g.d = d + len; g.last = 'run';
 }
-function genSweep(g, v, r) {
-  const s = g.side, d = g.d, len = Math.round(v * 2.7);
+function genSweep(g, v, r, k) {
+  const s = g.side, d = g.d, n = 2 + (r() < k ? 1 : 0), step = v * lerp(0.95, 0.72, k);
+  const len = Math.round(v * 1.0 + step * n + v * 0.6);
   slab(s, d, d + len);
-  SWEEP(s, d + v * 1.0, 2.1 + r() * 0.9, r());
-  if (r() > 0.35) SWEEP(s, d + v * 1.95, 2.1 + r() * 0.9, r());
+  for (let i = 0; i < n; i++) {
+    if (i === 1 && n === 2 && r() < 0.35 - 0.35 * k) continue;   // early zones sometimes skip the second
+    SWEEP(s, d + v * 1.0 + step * i, lerp(2.1, 1.5, k) + r() * lerp(0.9, 0.5, k), r());
+  }
   g.d = d + len; g.last = 'sweep';
 }
-function genTurn(g, v, r) {
-  const s = g.side, d = g.d, dir = r() > 0.5 ? 1 : -1, edge = d + Math.round(v * 0.9);
+// a hazard placed where you land after a turn or flip, so the landing itself needs steering
+function landingHazard(s, d, r, k) {
+  const t = r();
+  if (t < 0.4) { const c = gridA((r() * 2 - 1) * 1.8), w = lerp(2.8, 2.1, k); haz(s, d, d + 1.8, -4, c - w / 2); haz(s, d, d + 1.8, c + w / 2, 4); }
+  else if (t < 0.7) { const left = r() > 0.5; haz(s, d, d + 1.8, left ? -4 : 0.4, left ? -0.4 : 4); }
+  else haz(s, d, d + 1.8, -1.5, 1.5, 4.2);
+}
+function genTurn(g, v, r, k) {
+  const s = g.side, d = g.d, dir = r() > 0.5 ? 1 : -1, edge = d + Math.round(v * lerp(0.9, 0.62, k));
   slab(s, d, edge);
   pointer(s, edge, dir); hint(s, edge - 0.5, dir); edgeTrim(s, edge);
-  const s2 = mod4(s + dir), st = edge, len = Math.round(v * 2.0);
-  slab(s2, st, st + len, dir > 0 ? -8 : -4, dir > 0 ? 4 : 8);
+  const s2 = mod4(s + dir), st = edge, len = Math.round(v * lerp(2.0, 1.3, k)), grace = lerp(8, 5.5, k);
+  slab(s2, st, st + len, dir > 0 ? -grace : -4, dir > 0 ? 4 : grace);   // the overhang that catches late shifts shrinks
+  if (r() < k * 0.8) landingHazard(s2, st + v * lerp(0.95, 0.7, k), r, k);
   g.side = s2; g.d = st + len; g.last = 'turn';
 }
-function genFlip(g, v, r) {
-  const s = g.side, d = g.d, dir = r() > 0.5 ? 1 : -1, edge = d + Math.round(v * 0.9);
+function genFlip(g, v, r, k) {
+  const s = g.side, d = g.d, dir = r() > 0.5 ? 1 : -1, edge = d + Math.round(v * lerp(0.9, 0.65, k));
   slab(s, d, edge);
   hint(s, edge - 1.5, dir, 2); edgeTrim(s, edge);
-  const s2 = mod4(s + 2), st = edge + v * 0.3, len = Math.round(v * 2.6);
+  const s2 = mod4(s + 2), st = edge + v * 0.3, len = Math.round(v * lerp(2.6, 1.7, k));
   slab(s2, st, st + len);
+  if (r() < k * 0.6) landingHazard(s2, st + v * lerp(1.1, 0.85, k), r, k);
   g.side = s2; g.d = st + len; g.last = 'flip';
 }
-function genBridge(g, v, r) {
-  const s = g.side, d = g.d, e = d + Math.round(v * 0.7), gap = Math.round(v * 0.9) + 8, k = r();
+function genBridge(g, v, r, k) {
+  const s = g.side, d = g.d, e = d + Math.round(v * 0.7), gap = Math.round(v * 0.9) + 8, t = r();
   slab(s, d, e); edgeTrim(s, e);
-  if (k < 0.4) arrowBridge(s, e, e + gap, [-2, 0, 2][(r() * 3) | 0]);
-  else if (k < 0.7) { solid(s, -3.5, -1.3, -1, 0, e, e + gap); solid(s, 1.3, 3.5, -1, 0, e, e + gap); }
-  else mover(s, -2.3, 2.3, -1, 0, e, e + gap, { haz: false, amp: 1.7, per: 2.8 + r(), ph: r() });
+  if (t < 0.35) arrowBridge(s, e, e + gap, [-2, 0, 2][(r() * 3) | 0]);
+  else if (t < 0.65) { const w = lerp(2.2, 1.5, k); solid(s, -1.3 - w, -1.3, -1, 0, e, e + gap); solid(s, 1.3, 1.3 + w, -1, 0, e, e + gap); }
+  else { const hw = lerp(2.3, 1.6, k); mover(s, -hw, hw, -1, 0, e, e + gap, { haz: false, amp: 1.7, per: lerp(2.8, 2.1, k) + r() * 0.8, ph: r() }); }
   catcher(s, -6, 12, e - 2, e + gap + 9);
   slab(s, e + gap, e + gap + Math.round(v * 0.8));
   g.d = e + gap + Math.round(v * 0.8); g.last = 'bridge';
@@ -878,11 +904,15 @@ function genNext() {
   beginChunk();
   if (z > g.zone) { g.zone = z; genZoneGate(g, z); }
   else {
-    const v = zoneSpeed(g.zone), aerial = g.last === 'turn' || g.last === 'flip';
-    const opts = [[genRun, 3], [genSweep, 2], [genTurn, aerial ? 1.6 : 3], [genFlip, aerial ? 0.8 : 1.6], [genBridge, g.last === 'bridge' ? 0 : 1.6]];
+    const v = zoneSpeed(g.zone), k = zoneK(g.zone), aerial = g.last === 'turn' || g.last === 'flip';
+    const opts = [
+      [genRun, 3], [genSweep, 2 + k],
+      [genTurn, (aerial ? 1.6 : 3) + 2 * k], [genFlip, (aerial ? 0.8 : 1.6) + 1.4 * k],
+      [genBridge, g.last === 'bridge' ? 0 : 1.6],
+    ];
     let pick = r() * opts.reduce((a, o) => a + o[1], 0), fn = genRun;
     for (const o of opts) { if ((pick -= o[1]) < 0) { fn = o[0]; break; } }
-    fn(g, v, r);
+    fn(g, v, r, k);
   }
   endChunk();
 }
@@ -1712,7 +1742,7 @@ function selftest(maxD = INF0, seedRuns = 1) {
   return out;
 }
 window.PARALLAX = {
-  game, W, cam, selftest, S, perf, applyQuality,
+  game, W, cam, selftest, S, perf, applyQuality, ensureGen,
   demo(on = true) { game.auto = on; pilot.reset(game.sim.d); if (on) startGame(); return on; },
   // step the game synchronously (verification without relying on rAF timing)
   advance(sec, keysDown = {}) {
