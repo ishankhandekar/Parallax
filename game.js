@@ -30,6 +30,17 @@ const TUBE = 4;           // distance from the travel axis to every running surf
 const G = 38;             // gravity
 const LAT = 10.5;         // max lateral speed
 const VT = 46;            // terminal fall speed
+const GRAV_CD = 0.4;      // seconds between gravity shifts
+const GRAV_COMBO = 0.2;   // a second press inside this window turns 180° as one action
+const GRAV_BUFFER = 0.15; // presses this close to the end of a cooldown are kept, not dropped
+const AIR_GRACE = 0.08;   // just off an edge still counts as grounded
+const FOCUS_TS = 0.45;    // time scale while focusing
+const FOCUS_DRAIN = 1.8;  // seconds of focus from full
+const FOCUS_COST = 0.12;  // spent up front on every activation
+const FOCUS_MIN = 0.3;    // needed to start focusing
+const FOCUS_UNLOCK = 0.5; // after running dry, refill to here before focus works again
+const FOCUS_DELAY = 0.8;  // pause after releasing before it starts to refill
+const FOCUS_REFILL = 8;   // seconds to refill from empty
 const H = 1 / 120;        // physics step
 const INF0 = 1290;        // distance at which the procedural continuum begins
 const PAPER = 0xF4F1EA, INK = 0x111114;
@@ -219,6 +230,7 @@ const AU = (() => {
       burst(t, 0.012, 0.09, 'highpass', 5000, 0.5);
     },
     hover() { if (!ctx) return; osc('sine', 3100, 2900, ctx.currentTime, 0.03, 0.035); },
+    deny() { if (!ctx) return; const t = ctx.currentTime; osc('square', 150, 105, t, 0.07, 0.05); osc('sine', 300, 210, t, 0.05, 0.04); },
     // gravity shift: air sweep + a plucked chord tone, and the harmony moves
     flip(dir) {
       if (!ctx) return; const t = ctx.currentTime;
@@ -858,6 +870,7 @@ class Sim {
   constructor() {
     this.x = 0; this.y = 0; this.z = 0; this.vx = 0; this.vy = 0; this.vz = 0;
     this.gi = 0; this.t = 0; this.grounded = false; this.gb = null; this.air = 0;
+    this.cd = 0; this.combo = 0; this.airUsed = false;
     this.dead = null; this.land = 0; this.nx = 0; this.ny = 1; this.nz = 0;
     this.pad = 0;                                      // extra hazard clearance (autopilot look-ahead only)
   }
@@ -868,10 +881,21 @@ class Sim {
     this.x = q[0]; this.y = q[1]; this.z = q[2];
     this.vx = this.vy = 0; this.vz = -speedAt(cp.d) * speedK;
     this.gi = cp.side; this.grounded = true; this.gb = null; this.air = 0; this.dead = null; this.land = 0;
+    this.cd = 0; this.combo = 0; this.airUsed = false;
   }
-  flip(dir) { this.gi += dir; this.grounded = false; this.gb = null; }
+  get airborne() { return !this.grounded && this.air > AIR_GRACE; }
+  // one shift action per cooldown, and only one per stretch in the air
+  get canFlip() { return this.combo > 0 || (this.cd <= 0 && !(this.airborne && this.airUsed)); }
+  flip(dir) {
+    if (this.combo > 0) this.combo = 0;
+    else if (!this.canFlip) return false;
+    else { this.cd = GRAV_CD; this.combo = GRAV_COMBO; if (this.airborne) this.airUsed = true; }
+    this.gi += dir; this.grounded = false; this.gb = null;
+    return true;
+  }
   step(dt, ax, boxes) {
     this.land = 0;
+    this.cd = Math.max(0, this.cd - dt); this.combo = Math.max(0, this.combo - dt);
     const f = FR[mod4(this.gi)];
     // forward: automatic, eased toward the stage speed
     this.vz += (-speedAt(-this.z) - this.vz) * (1 - Math.exp(-2.4 * dt));
@@ -921,7 +945,7 @@ class Sim {
         }
       }
     }
-    if (grounded) { if (this.air > 0.09 && impact > 3) this.land = impact; this.air = 0; }
+    if (grounded) { if (this.air > 0.09 && impact > 3) this.land = impact; this.air = 0; this.airUsed = false; }
     else this.air += dt;
     this.grounded = grounded; this.gb = gb;
     if (this.x * f.dx + this.y * f.dy > TUBE + 6.5 || Math.abs(this.x) > 26 || Math.abs(this.y) > 26) {
@@ -1150,7 +1174,7 @@ function updateBG(d) {
 
 const game = {
   state: 'menu', paused: false, sim: new Sim(), cpi: 0, stage: null,
-  ts: 1, focus: 1, focusOn: false, focusLock: false,
+  ts: 1, focus: 1, focusOn: false, focusLock: false, focusIdle: 0,
   hitstop: 0, deadT: 0, flash: 0, pop: 1, squash: 0, squashV: 0, hot: 0,
   time: 0, startT: 0, best: +(localStorage.getItem('parallax.best') || 0), auto: false, deaths: 0,
 };
@@ -1164,7 +1188,7 @@ const prev = new THREE.Vector3(), bp = new THREE.Vector3(), lastBp = new THREE.V
 const hud = {
   root: $('hud'), dist: $('dist'), spd: $('spd'), spdBar: $('spdBar'), focusPct: $('focusPct'), focusBar: $('focusBar'), best: $('best'),
   stageNum: $('stageNum'), stageName: $('stageName'), gdeg: $('gdeg'), gside: $('gside'), gworld: $('gworld'),
-  sides: [0, 1, 2, 3].map(i => $('gs' + i)), prompt: $('prompt'), card: $('card'), toast: $('toast'),
+  sides: [0, 1, 2, 3].map(i => $('gs' + i)), gcd: $('gcd'), gball: $('gball'), prompt: $('prompt'), card: $('card'), toast: $('toast'),
   vignette: $('fx-vignette'), flash: $('fx-flash'), start: $('start'), pause: $('pause'), cache: {},
 };
 function setText(key, v) { if (hud.cache[key] !== v) { hud.cache[key] = v; hud[key].textContent = v; } }
@@ -1192,7 +1216,7 @@ function resetRun() {
   buildWorld();
   const s = game.sim = new Sim();
   s.place(W.cps[0], 0);
-  game.cpi = 0; game.ts = 1; game.focus = 1; game.focusLock = false; game.hitstop = 0; game.pop = 1; game.hot = 0; game.deaths = 0;
+  game.cpi = 0; game.ts = 1; game.focus = 1; game.focusLock = false; game.focusIdle = 0; game.hitstop = 0; game.pop = 1; game.hot = 0; game.deaths = 0;
   flipQ.length = 0; acc = 0;
   prev.set(s.x, s.y, s.z); bp.copy(prev); lastBp.copy(prev);
   cam.phi = cam.phiT = cam.phiV = 0; cam.f.copy(prev); cam.kick = cam.kickV = cam.trauma = 0;
@@ -1218,11 +1242,21 @@ function togglePause() {
   hud.pause.classList.toggle('on', game.paused);
   AU.suspend(game.paused);
 }
+function goHome() {
+  if (game.state === 'menu') return;
+  if (game.paused) togglePause();
+  saveBest();
+  resetRun();
+  game.state = 'menu'; game.auto = false; game.flash = 0.5;
+  AU.setPlaying(false);
+  hud.card.classList.remove('show'); hud.toast.classList.remove('show');
+  hud.root.classList.add('hidden'); hud.start.classList.remove('out');
+}
 function toggleSound() { AU.init(); $('soundState').textContent = AU.toggleMute() ? 'OFF' : 'ON'; }
 
 function doFlip(dir) {
   const s = game.sim;
-  s.flip(dir);
+  if (!s.flip(dir)) return false;
   cam.phiT = s.gi * HP;
   cam.phiV += dir * 2.5;
   AU.flip(dir);
@@ -1270,14 +1304,15 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyP' || e.code === 'Escape') return togglePause();
   if (e.code === 'KeyR') { AU.click(); return restart(); }
   if (game.paused || game.state !== 'playing') return;
-  if (e.code === 'KeyE') flipQ.push(1);
-  else if (e.code === 'KeyQ') flipQ.push(-1);
-  else if (e.code === 'Space') flipQ.push((keys.KeyA || keys.ArrowLeft) && !(keys.KeyD || keys.ArrowRight) ? -1 : 1);
+  if (e.code === 'KeyE') flipQ.push({ dir: 1, t: game.time });
+  else if (e.code === 'KeyQ') flipQ.push({ dir: -1, t: game.time });
+  else if (e.code === 'Space') flipQ.push({ dir: (keys.KeyA || keys.ArrowLeft) && !(keys.KeyD || keys.ArrowRight) ? -1 : 1, t: game.time });
 });
 addEventListener('keyup', e => { keys[e.code] = false; if (e.code === 'Space') e.preventDefault(); });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 hud.start.addEventListener('click', startGame);
 $('btnRestart').addEventListener('click', e => { AU.click(); restart(); e.currentTarget.blur(); });
+$('btnHome').addEventListener('click', e => { AU.click(); goHome(); e.currentTarget.blur(); });
 $('btnSound').addEventListener('click', e => { toggleSound(); AU.click(); e.currentTarget.blur(); });
 for (const b of document.querySelectorAll('button')) b.addEventListener('mouseenter', () => AU.hover());
 addEventListener('mousemove', e => {
@@ -1296,14 +1331,22 @@ addEventListener('resize', () => {
 function simulate(raw) {
   const s = game.sim;
   // focus (bullet-time) budget
-  const want = !!(game.state === 'playing' && (keys.ShiftLeft || keys.ShiftRight) && !game.focusLock && game.focus > 0);
-  if (want) { game.focus -= raw / 2.6; if (game.focus <= 0) { game.focus = 0; game.focusLock = true; } }
-  else { game.focus = Math.min(1, game.focus + raw / 5); if (game.focus > 0.3) game.focusLock = false; }
+  const holding = game.state === 'playing' && !!(keys.ShiftLeft || keys.ShiftRight);
+  let want = game.focusOn ? holding && game.focus > 0 : holding && !game.focusLock && game.focus >= FOCUS_MIN;
+  if (want && !game.focusOn) game.focus -= FOCUS_COST;
+  if (want) {
+    game.focus -= raw / FOCUS_DRAIN; game.focusIdle = 0;
+    if (game.focus <= 0) { game.focus = 0; game.focusLock = true; want = false; }
+  } else {
+    game.focusIdle += raw;
+    if (game.focusIdle > FOCUS_DELAY) game.focus = Math.min(1, game.focus + raw / FOCUS_REFILL);
+    if (game.focus >= FOCUS_UNLOCK) game.focusLock = false;
+  }
   if (want !== game.focusOn) {
     game.focusOn = want; AU.focus(want);
     hud.vignette.classList.toggle('on', want); canvas.classList.toggle('focus', want);
   }
-  game.ts = damp(game.ts, want ? 0.3 : 1, 12, raw);
+  game.ts = damp(game.ts, want ? FOCUS_TS : 1, 12, raw);
   AU.setRate(game.ts);
 
   if (game.state === 'playing') {
@@ -1312,7 +1355,12 @@ function simulate(raw) {
     let n = 0;
     while (acc >= H && n++ < 10 && game.state === 'playing') {
       prev.set(s.x, s.y, s.z);
-      while (flipQ.length) doFlip(flipQ.shift());
+      while (flipQ.length) {                           // buffered presses fire the moment a shift is allowed
+        const q = flipQ[0];
+        if (s.canFlip) { flipQ.shift(); doFlip(q.dir); }
+        else if (game.time - q.t > GRAV_BUFFER) { flipQ.shift(); AU.deny(); }
+        else break;
+      }
       let ax = ((keys.KeyD || keys.ArrowRight) ? 1 : 0) - ((keys.KeyA || keys.ArrowLeft) ? 1 : 0);
       if (game.auto) ax = pilot.update(s, doFlip);
       s.step(H, ax, W.boxes);
@@ -1407,7 +1455,7 @@ function present(raw) {
   const tq = cam.trauma * cam.trauma, tt = game.time * 47;
   _pos.x += Math.sin(tt) * tq * 0.34; _pos.y += Math.sin(tt * 1.31 + 2) * tq * 0.34;
   camera.position.copy(_pos); camera.up.set(upX, upY, 0); camera.lookAt(_look);
-  const fovT = 62 + sn * 9 - (1 - game.ts) / 0.7 * 9;
+  const fovT = 62 + sn * 9 - (1 - game.ts) / (1 - FOCUS_TS) * 8;
   cam.fov = damp(cam.fov, fovT, 7, raw);
   if (Math.abs(camera.fov - cam.fov) > 0.01) { camera.fov = cam.fov; camera.updateProjectionMatrix(); }
 
@@ -1433,6 +1481,10 @@ function present(raw) {
   hud.spdBar.style.transform = `scaleX(${clamp(speed / 34, 0, 1).toFixed(3)})`;
   setText('focusPct', String(Math.round(game.focus * 100)).padStart(3, '0'));
   hud.focusBar.style.transform = `scaleX(${game.focus.toFixed(3)})`;
+  hud.focusBar.classList.toggle('locked', game.focusLock || game.focus < FOCUS_MIN);
+  const cdOff = (100 - 100 * clamp(s.cd / GRAV_CD, 0, 1)).toFixed(1);
+  if (hud.cache.cd !== cdOff) { hud.cache.cd = cdOff; hud.gcd.setAttribute('stroke-dashoffset', cdOff); }
+  hud.gball.classList.toggle('spent', playing && s.airborne && s.airUsed);
   setText('best', String(Math.max(game.best, d)).padStart(4, '0'));
   const side = mod4(s.gi);
   if (hud.cache.side !== side) {

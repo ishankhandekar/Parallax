@@ -44,7 +44,10 @@
   #hud .reg::after { top: 5px; left: 0; height: 1px; width: 11px; }
 
   .tl { position: absolute; left: var(--m); top: var(--m); display: flex; align-items: center; gap: 18px; }
-  .mark { font-weight: 900; font-size: 17px; letter-spacing: -.03em; }
+  .mark { font: inherit; font-weight: 900; font-size: 17px; letter-spacing: -.03em; color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; pointer-events: auto; display: flex; align-items: center; }
+  .mark::before { content: '←'; font-weight: 500; display: inline-block; width: 0; opacity: 0; overflow: hidden; transform: translateX(6px); transition: width .2s ease, opacity .2s ease, transform .2s ease; }
+  .mark:hover::before, .mark:focus-visible::before { width: 1.15em; opacity: 1; transform: none; }
+  .mark:focus-visible { outline: 1px solid var(--ink); outline-offset: 6px; }
   .mark::after { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 5px; transition: background .8s; }
   .stage { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; letter-spacing: .14em; }
   .stage b { font-weight: 500; }
@@ -71,7 +74,8 @@
   .val em { font-family: var(--mono); font-size: 9px; letter-spacing: .14em; color: var(--muted); font-weight: 400; }
   .bar { height: 3px; background: var(--hair); margin-top: 7px; position: relative; overflow: hidden; }
   .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: var(--ink); transform-origin: left center; transform: scaleX(0); }
-  .bar i.acc { background: var(--accent); transition: background .8s; }
+  .bar i.acc { background: var(--accent); transition: background .8s, opacity .2s; }
+  .bar i.acc.locked { opacity: .3; }
 
   .br { position: absolute; right: var(--m); bottom: var(--m); display: flex; align-items: flex-end; gap: 16px; }
   .gmeta { text-align: right; padding-bottom: 4px; }
@@ -83,7 +87,9 @@
   #grav .side { stroke: var(--ink); stroke-width: 1.5; stroke-linecap: square; opacity: .38; transition: stroke .15s, stroke-width .15s, opacity .15s; }
   #grav .side.on { stroke: var(--accent); stroke-width: 6; opacity: 1; }
   #grav .origin { fill: var(--ink); }
-  #grav .ball { fill: var(--accent); transition: fill .8s; }
+  #grav .ball { fill: var(--accent); stroke: var(--accent); stroke-width: 0; transition: fill .12s, stroke .8s; }
+  #grav .ball.spent { fill: transparent; stroke-width: 1.5; }
+  #grav .cd { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke .8s; }
   #grav .arrow { fill: none; stroke: var(--ink); stroke-width: 1.5; }
 
   #prompt { position: absolute; left: 50%; bottom: 17vh; transform: translate(-50%, 8px); font-family: var(--mono); font-size: 12px; letter-spacing: .2em; padding: 11px 18px 10px; background: var(--ink); color: var(--paper); opacity: 0; transition: opacity .25s, transform .25s; white-space: nowrap; }
@@ -149,6 +155,13 @@
     .row { gap: 18px; }
     .cell { min-width: 92px; }
   }
+  @media (max-width: 560px) {
+    :root { --m: 16px; }
+    .tl { gap: 10px; }
+    .tr { gap: 6px; }
+    .btn { padding: 6px 8px; font-size: 9px; letter-spacing: .06em; }
+  }
+  @media (max-width: 400px) { .stage { display: none; } }
   @media (max-width: 860px) {
     .row .cell:nth-child(3) { display: none; }
     .s-ctl { grid-template-columns: repeat(2, 1fr); grid-column: 1 / span 12; }
@@ -176,7 +189,7 @@
   <i class="reg" style="left:8px;bottom:8px"></i><i class="reg" style="right:8px;bottom:8px"></i>
 
   <header class="tl">
-    <div class="mark">PARALLAX</div>
+    <button class="mark" id="btnHome" type="button" title="Back to title screen" aria-label="Back to title screen">PARALLAX</button>
     <div class="stage"><b id="stageNum">01</b><i></i><span id="stageName">THRESHOLD</span></div>
   </header>
 
@@ -214,6 +227,7 @@
     </div>
     <svg id="grav" viewBox="-52 -52 104 104" aria-label="Gravity orientation">
       <circle class="ring" r="48"/>
+      <circle class="cd" id="gcd" r="48" pathLength="100" transform="rotate(-90)"/>
       <line class="tick" x1="0" y1="-48" x2="0" y2="-43"/><line class="tick" x1="0" y1="48" x2="0" y2="43"/>
       <line class="tick" x1="-48" y1="0" x2="-43" y2="0"/><line class="tick" x1="48" y1="0" x2="43" y2="0"/>
       <g id="gworld">
@@ -224,7 +238,7 @@
         <rect class="origin" x="-3" y="31" width="6" height="2"/>
       </g>
       <path class="arrow" d="M0 -9 V5 M-5 0 L0 6 L5 0"/>
-      <circle class="ball" cx="0" cy="15" r="5"/>
+      <circle class="ball" id="gball" cx="0" cy="15" r="5"/>
     </svg>
   </div>
 
