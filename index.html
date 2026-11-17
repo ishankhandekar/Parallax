@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PARALLAX</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23F4F1EA'/%3E%3Ccircle cx='16' cy='16' r='9' fill='%23FF4D00'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #111114;
+    --paper: #F4F1EA;
+    --accent: #FF4D00;
+    --muted: rgba(17, 17, 20, .52);
+    --hair: rgba(17, 17, 20, .22);
+    --sans: 'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    --m: 28px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--paper); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; user-select: none; }
+  canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; transition: filter .2s ease; }
+  canvas#c.focus { filter: contrast(1.07) saturate(1.2); }
+
+  /* ── screen-space effects ─────────────────────────────── */
+  #fx-vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .18s ease;
+    background: radial-gradient(ellipse at center, rgba(17,17,20,0) 42%, rgba(17,17,20,.62) 100%); }
+  #fx-vignette.on { opacity: 1; }
+  #fx-flash { position: fixed; inset: 0; pointer-events: none; background: var(--paper); opacity: 0; }
+
+  /* ── shared type atoms ────────────────────────────────── */
+  .lab { font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  kbd { font-family: var(--mono); font-size: 9px; letter-spacing: .08em; padding: 2px 5px 1px; border: 1px solid var(--hair); border-radius: 2px; color: var(--ink); }
+  em { font-style: normal; }
+
+  /* ── HUD ──────────────────────────────────────────────── */
+  #hud { position: fixed; inset: 0; pointer-events: none; opacity: 1; transition: opacity .5s ease; }
+  #hud.hidden { opacity: 0; }
+  #hud .reg { position: absolute; width: 11px; height: 11px; opacity: .55; }
+  #hud .reg::before, #hud .reg::after { content: ''; position: absolute; background: var(--ink); }
+  #hud .reg::before { left: 5px; top: 0; width: 1px; height: 11px; }
+  #hud .reg::after { top: 5px; left: 0; height: 1px; width: 11px; }
+
+  .tl { position: absolute; left: var(--m); top: var(--m); display: flex; align-items: center; gap: 18px; }
+  .mark { font-weight: 900; font-size: 17px; letter-spacing: -.03em; }
+  .mark::after { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 5px; transition: background .8s; }
+  .stage { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; letter-spacing: .14em; }
+  .stage b { font-weight: 500; }
+  .stage i { width: 34px; height: 1px; background: var(--ink); }
+  .stage span { color: var(--muted); }
+
+  .tr { position: absolute; right: var(--m); top: calc(var(--m) - 6px); display: flex; gap: 8px; pointer-events: auto; }
+  .btn { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--ink); background: rgba(244,241,234,.55); backdrop-filter: blur(6px); border: 1px solid var(--ink); border-radius: 0; padding: 9px 12px; cursor: pointer; display: flex; align-items: center; gap: 9px; transition: background .12s, color .12s, transform .08s; }
+  .btn b { font-weight: 500; min-width: 22px; text-align: left; }
+  .btn:hover { background: var(--ink); color: var(--paper); }
+  .btn:hover kbd { color: var(--paper); border-color: rgba(244,241,234,.5); }
+  .btn:active { transform: translateY(1px); }
+  .btn.solid { background: var(--ink); color: var(--paper); }
+  .btn.solid kbd { color: var(--paper); border-color: rgba(244,241,234,.45); }
+  .btn.solid:hover { background: var(--accent); border-color: var(--accent); color: var(--ink); }
+  .btn.solid:hover kbd { color: var(--ink); border-color: rgba(17,17,20,.5); }
+
+  .bl { position: absolute; left: var(--m); bottom: var(--m); }
+  .dist { font-weight: 800; font-size: clamp(54px, 7.2vw, 104px); line-height: .86; letter-spacing: -.045em; font-variant-numeric: tabular-nums; margin: 6px 0 16px -3px; display: flex; align-items: flex-end; gap: 8px; }
+  .dist em { font-family: var(--mono); font-weight: 500; font-size: 12px; letter-spacing: .14em; margin-bottom: 9px; color: var(--muted); }
+  .row { display: flex; gap: 26px; padding-top: 12px; border-top: 1px solid var(--ink); }
+  .cell { min-width: 104px; }
+  .val { font-weight: 600; font-size: 22px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin-top: 4px; display: flex; align-items: baseline; gap: 5px; }
+  .val em { font-family: var(--mono); font-size: 9px; letter-spacing: .14em; color: var(--muted); font-weight: 400; }
+  .bar { height: 3px; background: var(--hair); margin-top: 7px; position: relative; overflow: hidden; }
+  .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: var(--ink); transform-origin: left center; transform: scaleX(0); }
+  .bar i.acc { background: var(--accent); transition: background .8s; }
+
+  .br { position: absolute; right: var(--m); bottom: var(--m); display: flex; align-items: flex-end; gap: 16px; }
+  .gmeta { text-align: right; padding-bottom: 4px; }
+  .gmeta .lab { justify-content: flex-end; }
+  .gmeta .val { justify-content: flex-end; font-size: 30px; font-weight: 800; letter-spacing: -.04em; }
+  #grav { width: 104px; height: 104px; overflow: visible; }
+  #grav .ring { fill: none; stroke: var(--hair); stroke-width: 1; }
+  #grav .tick { stroke: var(--ink); stroke-width: 1; opacity: .5; }
+  #grav .side { stroke: var(--ink); stroke-width: 1.5; stroke-linecap: square; opacity: .38; transition: stroke .15s, stroke-width .15s, opacity .15s; }
+  #grav .side.on { stroke: var(--accent); stroke-width: 6; opacity: 1; }
+  #grav .origin { fill: var(--ink); }
+  #grav .ball { fill: var(--accent); transition: fill .8s; }
+  #grav .arrow { fill: none; stroke: var(--ink); stroke-width: 1.5; }
+
+  #prompt { position: absolute; left: 50%; bottom: 17vh; transform: translate(-50%, 8px); font-family: var(--mono); font-size: 12px; letter-spacing: .2em; padding: 11px 18px 10px; background: var(--ink); color: var(--paper); opacity: 0; transition: opacity .25s, transform .25s; white-space: nowrap; }
+  #prompt.on { opacity: 1; transform: translate(-50%, 0); }
+  #prompt b { color: var(--accent); font-weight: 500; }
+
+  #card { position: absolute; left: var(--m); top: 50%; transform: translateY(-58%); opacity: 0; pointer-events: none; }
+  #card .num { font-weight: 900; font-size: 34vh; line-height: .78; letter-spacing: -.07em; margin-left: -1.2vh; }
+  #card .rule { height: 2px; width: 0; background: var(--ink); margin: 20px 0 12px; }
+  #card .nm { font-weight: 800; font-size: 26px; letter-spacing: -.02em; }
+  #card .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .18em; color: var(--muted); margin-top: 6px; }
+  #card.show { animation: cardIn 2.3s cubic-bezier(.2,.8,.2,1) both; }
+  #card.show .rule { animation: ruleIn 2.3s cubic-bezier(.2,.8,.2,1) both; }
+  @keyframes cardIn { 0% { opacity: 0; transform: translate(-24px, -58%); } 14% { opacity: 1; transform: translate(0, -58%); } 78% { opacity: 1; transform: translate(0, -58%); } 100% { opacity: 0; transform: translate(14px, -58%); } }
+  @keyframes ruleIn { 0% { width: 0; } 30% { width: 240px; } 100% { width: 240px; } }
+
+  #toast { position: absolute; left: 50%; top: calc(var(--m) + 2px); transform: translateX(-50%); font-family: var(--mono); font-size: 10px; letter-spacing: .22em; display: flex; align-items: center; gap: 10px; opacity: 0; }
+  #toast::before, #toast::after { content: ''; width: 26px; height: 1px; background: var(--ink); }
+  #toast.show { animation: toast 1.5s ease both; }
+  @keyframes toast { 0% { opacity: 0; letter-spacing: .5em; } 18% { opacity: 1; letter-spacing: .22em; } 75% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* ── start screen ─────────────────────────────────────── */
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: space-between; padding: var(--m); cursor: pointer;
+    background: linear-gradient(96deg, rgba(244,241,234,.94) 0%, rgba(244,241,234,.74) 34%, rgba(244,241,234,.12) 62%, rgba(244,241,234,0) 78%);
+    transition: opacity .6s ease, transform .9s cubic-bezier(.2,.8,.2,1); }
+  #start.out { opacity: 0; pointer-events: none; transform: translateX(-3%); }
+  .s-top { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; font-family: var(--mono); font-size: 10px; letter-spacing: .16em; padding-bottom: 12px; border-bottom: 1px solid var(--ink); }
+  .s-top span:nth-child(1) { grid-column: 1 / span 4; }
+  .s-top span:nth-child(2) { grid-column: 5 / span 4; color: var(--muted); }
+  .s-top span:nth-child(3) { grid-column: 11 / span 2; text-align: right; }
+  .s-mid { position: relative; }
+  .s-kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .2em; display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .s-kicker i { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+  #start h1 { position: relative; font-weight: 900; font-size: clamp(76px, 15.2vw, 270px); line-height: .8; letter-spacing: -.062em; margin-left: -.045em; will-change: transform;
+    transform: translate(calc(var(--mx, 0) * -7px), calc(var(--my, 0) * -4px)); }
+  #start h1::before { content: attr(data-t); position: absolute; left: 0; top: 0; color: transparent; -webkit-text-stroke: 1.5px var(--accent); z-index: -1;
+    transform: translate(calc(.018em + var(--mx, 0) * 16px), calc(.018em + var(--my, 0) * 10px)); }
+  .s-lede { max-width: 430px; font-size: 17px; line-height: 1.34; font-weight: 500; letter-spacing: -.005em; margin-top: 30px; }
+  .s-bot { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; align-items: end; padding-top: 14px; border-top: 1px solid var(--ink); }
+  .s-ctl { grid-column: 1 / span 7; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .s-ctl div { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; line-height: 1.7; }
+  .s-ctl div span { display: block; color: var(--muted); }
+  .s-ctl div b { font-family: var(--sans); font-weight: 800; font-size: 19px; letter-spacing: -.01em; display: block; margin: 3px 0 1px; }
+  .s-go { grid-column: 9 / span 4; display: flex; justify-content: flex-end; }
+  #btnStart { font-family: var(--sans); font-weight: 800; font-size: 19px; letter-spacing: -.01em; background: var(--ink); color: var(--paper); border: 0; padding: 19px 22px 18px 26px; cursor: pointer; display: flex; align-items: center; gap: 34px; transition: background .14s, color .14s, gap .2s; }
+  #btnStart:hover { background: var(--accent); color: var(--ink); gap: 46px; }
+  #btnStart kbd { font-size: 10px; color: inherit; border-color: currentColor; opacity: .8; animation: blink 1.5s steps(2, jump-none) infinite; }
+  @keyframes blink { 0% { opacity: .9; } 100% { opacity: .25; } }
+
+  /* ── pause ────────────────────────────────────────────── */
+  #pause { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: rgba(244,241,234,.72); backdrop-filter: blur(10px); }
+  #pause.on { display: flex; }
+  #pause b { font-weight: 900; font-size: 9vw; letter-spacing: -.05em; line-height: .85; }
+  #pause span { font-family: var(--mono); font-size: 11px; letter-spacing: .2em; }
+
+  @media (max-width: 960px) {
+    .stage i, .stage span { display: none; }
+    .btn { padding: 8px 10px; gap: 7px; }
+    .btn kbd { display: none; }
+    .br { flex-direction: column; align-items: flex-end; gap: 4px; }
+    #grav { width: 84px; height: 84px; }
+    .gmeta .val { font-size: 24px; }
+    .row { gap: 18px; }
+    .cell { min-width: 92px; }
+  }
+  @media (max-width: 860px) {
+    .row .cell:nth-child(3) { display: none; }
+    .s-ctl { grid-template-columns: repeat(2, 1fr); grid-column: 1 / span 12; }
+    .s-go { grid-column: 1 / span 12; justify-content: flex-start; }
+    .s-top span:nth-child(2) { display: none; }
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="fx-vignette"></div>
+<div id="fx-flash"></div>
+
+<!-- ───────────── HUD ───────────── -->
+<div id="hud" class="hidden">
+  <i class="reg" style="left:8px;top:8px"></i><i class="reg" style="right:8px;top:8px"></i>
+  <i class="reg" style="left:8px;bottom:8px"></i><i class="reg" style="right:8px;bottom:8px"></i>
+
+  <header class="tl">
+    <div class="mark">PARALLAX</div>
+    <div class="stage"><b id="stageNum">01</b><i></i><span id="stageName">THRESHOLD</span></div>
+  </header>
+
+  <div class="tr">
+    <button id="btnSound" class="btn" type="button">SOUND <b id="soundState">ON</b><kbd>M</kbd></button>
+    <button id="btnRestart" class="btn solid" type="button">RESTART <kbd>R</kbd></button>
+  </div>
+
+  <div class="bl">
+    <div class="lab">Distance</div>
+    <div class="dist"><span id="dist">0000</span><em>M</em></div>
+    <div class="row">
+      <div class="cell">
+        <div class="lab">Velocity</div>
+        <div class="val"><span id="spd">00.0</span><em>M/S</em></div>
+        <div class="bar"><i id="spdBar"></i></div>
+      </div>
+      <div class="cell">
+        <div class="lab">Focus <kbd>SHIFT</kbd></div>
+        <div class="val"><span id="focusPct">100</span><em>%</em></div>
+        <div class="bar"><i id="focusBar" class="acc"></i></div>
+      </div>
+      <div class="cell">
+        <div class="lab">Best</div>
+        <div class="val"><span id="best">0000</span><em>M</em></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="br">
+    <div class="gmeta">
+      <div class="lab">Gravity</div>
+      <div class="val" id="gdeg">000°</div>
+      <div class="lab" id="gside">FLOOR</div>
+    </div>
+    <svg id="grav" viewBox="-52 -52 104 104" aria-label="Gravity orientation">
+      <circle class="ring" r="48"/>
+      <line class="tick" x1="0" y1="-48" x2="0" y2="-43"/><line class="tick" x1="0" y1="48" x2="0" y2="43"/>
+      <line class="tick" x1="-48" y1="0" x2="-43" y2="0"/><line class="tick" x1="48" y1="0" x2="43" y2="0"/>
+      <g id="gworld">
+        <line class="side" id="gs0" x1="-25" y1="25" x2="25" y2="25"/>
+        <line class="side" id="gs1" x1="25" y1="25" x2="25" y2="-25"/>
+        <line class="side" id="gs2" x1="25" y1="-25" x2="-25" y2="-25"/>
+        <line class="side" id="gs3" x1="-25" y1="-25" x2="-25" y2="25"/>
+        <rect class="origin" x="-3" y="31" width="6" height="2"/>
+      </g>
+      <path class="arrow" d="M0 -9 V5 M-5 0 L0 6 L5 0"/>
+      <circle class="ball" cx="0" cy="15" r="5"/>
+    </svg>
+  </div>
+
+  <div id="prompt"></div>
+  <div id="card">
+    <div class="num" id="cardNum">01</div>
+    <div class="rule"></div>
+    <div class="nm" id="cardName">THRESHOLD</div>
+    <div class="sub" id="cardSub">WALL-RUNNING</div>
+  </div>
+  <div id="toast">CHECKPOINT</div>
+</div>
+
+<!-- ───────────── Start screen ───────────── -->
+<div id="start">
+  <div class="s-top">
+    <span>PARALLAX — N°01</span>
+    <span>A GRAVITY-SHIFT RUNNER IN THREE STAGES + ∞</span>
+    <span>MMXXVI</span>
+  </div>
+  <div class="s-mid">
+    <div class="s-kicker"><i></i>EVERY WALL IS A FLOOR</div>
+    <h1 data-t="PARALLAX">PARALLAX</h1>
+    <p class="s-lede">Roll forward. Turn the world ninety degrees at a time. Walls become floors, numerals become bridges, and the horizon never moves.</p>
+  </div>
+  <div class="s-bot">
+    <div class="s-ctl">
+      <div><span>01 — STEER</span><b>A / D</b>← / →</div>
+      <div><span>02 — SHIFT GRAVITY</span><b>Q / E</b>OR SPACE</div>
+      <div><span>03 — FOCUS</span><b>SHIFT</b>HOLD FOR SLOW-MO</div>
+      <div><span>04 — SYSTEM</span><b>R · M · P</b>RESTART · SOUND · PAUSE</div>
+    </div>
+    <div class="s-go"><button id="btnStart" type="button">BEGIN <kbd>SPACE</kbd></button></div>
+  </div>
+</div>
+
+<div id="pause"><b>PAUSED</b><span>PRESS P TO RESUME</span></div>
+
+<script type="module" src="game.js"></script>
+</body>
+</html>
